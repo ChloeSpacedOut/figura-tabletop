@@ -7,8 +7,8 @@ local core = {}
 
 
 ---@class ParamType<T>
----@field decode fun(encoded: string): T decodes data after it has been pinged
----@field encode fun(data: T): string encodes data to be pinged
+---@field decode fun(encoded: Buffer): T decodes data after it has been pinged
+---@field encode fun(rawData: T): string encodes data to be pinged
 core.ParamType = {}
 core.ParamType.__index = core.ParamType
 
@@ -80,13 +80,28 @@ defaultParamTypes.variableLengthDecimal = core.ParamType:new("variableLengthDeci
     end
 )
 
+---a vector 2 that uses variable length integers with 2 decimal places. Useful for compressed vec2 with low precision
+defaultParamTypes.variableLengthVec3 = core.ParamType:new("variableLengthVec3",
+    function(encoded)
+        local x = util.readVariableLengthInt(encoded) / 100
+        local y = util.readVariableLengthInt(encoded) / 100
+        return vec(x, y)
+    end,
+
+    function(rawData)
+        local x = util.numToVarLengthInt(math.floor(rawData.x * 100))
+        local y = util.numToVarLengthInt(math.floor(rawData.y * 100))
+        return x .. y
+    end
+)
+
 ---a vector 3 that uses variable length integers with 2 decimal places. Useful for compressed vec3 with low precision
 defaultParamTypes.variableLengthVec3 = core.ParamType:new("variableLengthVec3",
     function(encoded)
         local x = util.readVariableLengthInt(encoded) / 100
         local y = util.readVariableLengthInt(encoded) / 100
         local z = util.readVariableLengthInt(encoded) / 100
-        return vec(x,y,z)
+        return vec(x, y, z)
     end,
 
     function(rawData)
@@ -248,7 +263,7 @@ table.insert(defaultSlotParams, core.Param:new("parent", defaultParamTypes.varia
 table.insert(defaultSlotParams, core.Param:new("contents", defaultParamTypes.variableLengthIntegerTable))
 table.insert(defaultSlotParams, core.Param:new("contentsLimit", defaultParamTypes.variableLengthInteger))
 table.insert(defaultSlotParams, core.Param:new("dimensions", defaultParamTypes.dimenions))
-table.insert(defaultSlotParams, core.Param:new("position", defaultParamTypes.variableLengthVec3))
+table.insert(defaultSlotParams, core.Param:new("position", defaultParamTypes.variableLengthVec2))
 table.insert(defaultSlotParams, core.Param:new("leniecne", defaultParamTypes.dimenions))
 table.insert(defaultSlotParams, core.Param:new("isVisible", defaultParamTypes.boolean))
 table.insert(defaultSlotParams, core.Param:new("canRemoveContents", defaultParamTypes.boolean))
@@ -261,7 +276,7 @@ table.insert(defaultPieceParams, core.Param:new("parent", defaultParamTypes.vari
 table.insert(defaultPieceParams, core.Param:new("model", defaultParamTypes.variableLengthInteger))
 table.insert(defaultPieceParams, core.Param:new("dimensions", defaultParamTypes.dimenions))
 table.insert(defaultPieceParams, core.Param:new("height", defaultParamTypes.variableLengthDecimal))
-table.insert(defaultPieceParams, core.Param:new("position", defaultParamTypes.variableLengthVec3))
+table.insert(defaultPieceParams, core.Param:new("position", defaultParamTypes.variableLengthVec2))
 table.insert(defaultPieceParams, core.Param:new("slots", defaultParamTypes.variableLengthIntegerTable))
 table.insert(defaultPieceParams, core.Param:new("contents", defaultParamTypes.variableLengthIntegerTable))
 table.insert(defaultPieceParams, core.Param:new("contentsLimit", defaultParamTypes.variableLengthInteger))
@@ -271,17 +286,19 @@ table.insert(defaultPieceParams, core.Param:new("isMovable", defaultParamTypes.b
 table.insert(defaultPieceParams, core.Param:new("isRemovable", defaultParamTypes.boolean))
 
 ---@class ParamHandler
----@field parameters table<Param>
+---@field params Param[]
+---@field paramIndex {string : integer}
 core.ParamHandler = {}
 core.ParamHandler.__index = core.ParamHandler
 
 ---creates a new parameter handler
----@param ... Param optional table of parameters to add on creation. Table keys should
+---@param ... Param parameters to add on creation
 function core.ParamHandler:new(...)
     self = setmetatable({}, core.ParamHandler)
-    self.parameters {}
+    self.params = {}
+    self.paramIndex = {}
 
-    local parameters = {...}
+    local parameters = { ... }
     if parameters then
         for _, parameter in ipairs(parameters) do
             self:addParam(parameter)
@@ -293,29 +310,8 @@ end
 ---adds a new parameter
 ---@param param Param
 function core.ParamHandler:addParam(param)
-    table.insert(self.parameters, param)
-end
-
----@class Game
----@field worldPos Vector3 the root position where this game will exist in the world
----@field playSpaces table<Slot> table that contains all playspace slots
----@field root Piece the root piece of this game
----@field paramTypes table<ParamType>
-core.Game = {}
-core.Game.__index = core.Game
-
----creates a new game
----@param worldPos Vector3 the root position where this game will exist in the world
----@return Game
-function core.Game:new(worldPos)
-    self = setmetatable({}, core.Game)
-    self.playSpaces = {}
-    self.paramTypes = defaultParamTypes
-    self.slotParamHandler = core.ParamHandler:new(table.unpack(defaultSlotParams))
-    self.pieceParamHandler = core.ParamHandler:new(table.unpack(defaultPieceParams))
-    --self.root = core.Piece:new()
-
-    return self
+    table.insert(self.params, param)
+    self.paramIndex[param.id] = #self.params
 end
 
 ---@class Dimensions
@@ -333,31 +329,151 @@ function core.Dimensions:new(min, max)
     return self
 end
 
+---@class Game
+---@field id integer generated ID of this game instance
+---@field gameTime integer this game's internal timer
+---@field nextSyncId integer the next available sync ID
+---@field syncing string? what data is currently being synced
+---@field toSync string? what data has currently stored to be passively synced
+---@field syncInterval integer how many ticks between each passive sync ping
+---@field syncSpeed integer how many bytes will be sent per second when passively syncing. It is reccomened to keep this well under the ping limit to also allow non-passive syncing 
+---@field worldPos Vector3 the root position where this game will exist in the world
+---@field worldRot Vector3 the root rotation of the game relative to the world
+---@field slots Slot[] table that contains all slots
+---@field pieces Piece[] table that contains all pieces
+---@field root Piece the root piece of this game
+---@field paramTypes ParamType[] table that contains all parameter types relevant to this game
+---@field paramHandlers ParamHandler[] table that contains all parameter handlers relevant to this game
+core.Game = {}
+core.Game.__index = core.Game
+
+---creates a new game
+---@param worldPos Vector3 the root position where this game will exist in the world
+---@param worldRot Vector3 the root rotation of the game relative to the world
+---@return Game
+function core.Game:new(worldPos, worldRot)
+    self = setmetatable({}, core.Game)
+    self.id = #core.games + 1
+    self.gameTime = 0
+    self.nextSyncId = 0
+    self.syncing = nil
+    self.toSync = nil
+    self.syncInterval = 5
+    self.syncSpeed = 200
+    self.slots = {}
+    self.pieces = {}
+    self.worldPos = worldPos
+    self.worldRot = worldRot
+    self.paramTypes = defaultParamTypes
+    self.paramHandlers = {
+        slot = core.ParamHandler:new(table.unpack(defaultSlotParams)),
+        piece = core.ParamHandler:new(table.unpack(defaultPieceParams))
+    }
+
+
+    --self.root = core.Piece:new()
+
+    core.games[self.id] = self
+    return self
+end
+
+---get all of this game's parameter types
+---@return ParamType[]
+function core.Game:getParamTypes()
+    return self.paramTypes
+end
+
+---adds a new parameter handler to this game
+---@param id string
+---@param paramHandler ParamHandler
+function core.Game:addParamHandler(id, paramHandler)
+    self.paramHandlers[id] = paramHandler
+end
+
+---get all of this game's parameter handlers
+---@return ParamHandler[]
+function core.Game:getParamHandlers()
+    return self.paramHandlers
+end
+
+
+---updates and instantly syncs a parameter
+---@param handlerId string
+---@param paramId string
+---@param value any
+function core.Game:updateParam(handlerId, syncId, paramId, value)
+    local paramHandler = self:getParamHandlers()[handlerId]
+    local paramIndex = paramHandler.paramIndex[paramId]
+    local param = paramHandler.params[paramIndex]
+    local paramType = param.paramType
+    local syncIdEncoded = util.numToVarLengthInt(syncId)
+    local paramIndexEncoded = util.numToVarLengthInt(paramIndex)
+    local encoded = paramType.encode(value)
+    local toSend = syncIdEncoded .. paramIndexEncoded .. encoded
+    
+end
+
+---Creates a new game slot
+function core.Game:newSlot()
+    table.insert(self.slots, core.Slot:new(self))
+end
+
+function core.Game:newPiece()
+    table.insert(self.pieces, core.Piece:new(self))
+end
+
+function core.Game:intialiseSync()
+    util.numToVarLengthInt(self.nextSyncId)
+end
+
+---@type Game[]
+core.games = {}
+
+local clock = 0
+function events.tick()
+    clock = clock + 1
+    for _, game in pairs(core.games) do
+        game.gameTime = game.gameTime + 1
+        if clock % game.syncInterval == 0 then
+            if not game.toSync then
+                local gameTime = util.numToVarLengthInt(game.gameTime)
+                local nextSyncId = util.numToVarLengthInt(game.nextSyncId)
+                ---- timing should be generated in segments that are stored in a table
+                goto continue
+            end
+            
+            
+        end
+    
+        ::continue::
+    end
+end
+
 ---@class Slot
----@field id string unique ID of this slot
----@field parent Piece parent piece of this slot
----@field contents Contents contents of this slot
----@field dimensions Dimensions dimensions of this slot
----@field position Vector3 position of this slot relative to its parent piece
----@field lenience Dimensions how much objects can be moved within this slot
+---@field syncId integer unique syncID of this slot
+---@field lastSynced integer how long it has been since this slot was last synced
+---@field parent integer the syncID of this slot's parent piece
+---@field contents integer[] table of all pieces contained within this slot, stored by syncID
+---@field dimensions Dimensions dimensions of this slot. Rounded down to 2 decimal places
+---@field position Vector2 position of this slot relative to its parent piece. Rounded down to 2 decimal places
+---@field lenience Dimensions how much objects can be moved within this slot. Rounded down to 2 decimal places
 core.Slot = {}
 core.Slot.__index = core.Slot
----@param id string unique ID of this slot
----@param parent Piece parent piece of this slot
----@param contents Contents contents of this slot
----@param dimensions Dimensions dimensions of this slot
----@param position Vector3 position of this slot relative to its parent piece
----@param lenience Dimensions how much objects can be moved within this slot
+---@param game Game the game that uses this slot
 ---@return Slot
-function core.Slot:new(id, parent, contents, dimensions, position, lenience)
+function core.Slot:new(game)
     self = setmetatable({}, core.Slot)
-    self.id = id
-    self.parent = parent
-    self.contents = contents
-    self.dimensions = dimensions
-    self.position = position
+    self.syncId = game.nextSyncId
+    game.nextSyncId = game.nextSyncId + 1
+
+    self.lastSynced = 0
+    self.game = game
+    self.parent = nil
+    self.contents = {}
+    self.dimensions = core.Dimensions:new(vec(-1, -1), vec(1, 1))
+    self.position = vec(0, 0)
     self.rotation = vec(0, 0, 0)
-    self.lenience = lenience
+    self.lenience = core.Dimensions:new(vec(0, 0), vec(0, 0))
     self.isVisiable = true
     self.canRemoveContents = true
     self.canMoveContents = true
@@ -365,41 +481,51 @@ function core.Slot:new(id, parent, contents, dimensions, position, lenience)
     return self
 end
 
+---Syncs and updates a parameter with the specified value. Use this instead of setting your parameters directly
+---@param paramId string
+---@param value any
+function core.Slot:update(paramId, value)
+    self.game:updateParam("slot", self.syncId, paramId, value)
+end
+
 ---@class Piece
----@field id string unique ID of the piece
+---@field syncId integer unique syncID of the piece
 ---@field parent Slot parent slot of this piece
 ---@field model ModelPart model the piece will copy and use
 ---@field dimensions Dimensions dimensions of this piece
 ---@field height number height of this piece
 ---@field position Vector2 position within this piece's parent slot. Clamped by the parent slot's lenience
----@field slots table<Slot> table that contains all of this piece's slots
----@field contents Contents contents of this piece
+---@field slots Slot[] table that contains all of this piece's slots
+---@field contents integer[] table of all pieces contained within this piece, stored by syncID
 core.Piece = {}
 core.Piece.__index = core.Piece
----@param id string unique ID of the piece
----@param parent Slot parent slot of this piece
----@param model ModelPart model the piece will copy and use
----@param dimensions Dimensions dimensions of this piece
----@param height number height of this piece
----@param position Vector2 position within this piece's parent slot. Clamped by the parent slot's lenience
----@param slots table<Slot> table that contains all of this piece's slots
----@param contents Contents contents of this piece
+---@param game Game the game that uses this slot
 ---@return Piece
-function core.Piece:new(id, parent, model, dimensions, height, position, slots, contents)
+function core.Piece:new(game)
     self = setmetatable({}, core.Piece)
-    self.id = id
-    self.parent = parent
-    self.model = model
-    self.dimensions = dimensions
-    self.height = height
-    self.position = position
-    self.slots = slots
-    self.contents = contents
+    self.syncId = game.nextSyncId
+    game.nextSyncId = game.nextSyncId + 1
+
+    self.game = game
+    self.parent = nil
+    self.model = nil
+    self.dimensions = core.Dimensions:new(vec(-1, -1), vec(1, 1))
+    self.height = 2
+    self.position = vec(0, 0)
+    self.slots = {}
+    self.contents = {}
     self.isVisible = true
     self.isInteractable = true
     self.isMovable = true
     self.isRemovable = true
     return self
+end
+
+---Syncs and updates a parameter with the specified value. Use this instead of setting your parameters directly
+---@param paramId string
+---@param value any
+function core.Piece:update(paramId, value)
+    self.game:updateParam("piece", paramId, value)
 end
 
 return core
