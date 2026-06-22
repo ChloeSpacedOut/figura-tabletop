@@ -1,6 +1,9 @@
 local util = require("..util")
 ---@class TabletopCore
-local core = {}
+---@field currentGame Game? the currently active game
+local core = {
+    currentGame = nil
+}
 
 
 
@@ -329,14 +332,93 @@ function core.Dimensions:new(min, max)
     return self
 end
 
+---@class Send
+---@field syncStream SyncStream the sync stream this send object is in reference to
+---@field id integer the ID of this send witin its sync stream
+---@field syncTime integer the time when this data began being stored to be synced
+---@field isSending boolean if the data is being sent
+---@field currentPacket integer the current packet being sent
+---@field toSend string the encoded final version data that is to be sent
+---@field timeline string[] the timeline of data that is to be sent
+---@field timelineIndex integer[] the index of the timeline. Used to maintain order
+core.Send = {}
+core.Send.__index = core.Send
+---@param syncStream SyncStream the sync stream this send object is in reference to
+function core.Send:new(syncStream)
+    self = setmetatable({}, core.Send)
+    self.syncStream = syncStream
+    self.id = #syncStream.toSend + 1
+    self.syncTime = 0
+    self.isSending = false
+    self.currentPacket = 0
+    self.toSend = nil
+    self.timeline = {}
+    self.timelineIndex = {}
+
+    table.insert(syncStream.toSend, self)
+    return self
+end
+
+function core.Send:add()
+
+end
+
+-- timing chunks -> toSendString -> receiving chunks -> timing chunks
+-- allow 16 streams of async transfer, each with their own settings. Each stream can have a queue
+-- function to add and remove new sends
+-- remember you're dealing with both passive and active sync
+-- fields can be used a system control messages, like clone field, which when an ID is added, piece is cloned to that slot
+
+---@class Receive
+---@field received string[]
+core.Receive = {}
+core.Receive.__index = core.Receive
+function core.Receive:new()
+    self = setmetatable({}, core.Receive)
+    self.syncTime = 0
+    self.received = {}
+    self.timeline = {}
+    self.timelineIndex = {}
+    return self
+end
+
+---@class SyncStream
+---@field game Game the game this sync stream will be in reference to
+---@field id integer a numeric ID between 0 and 15
+---@field ping function the ping function send objects will hook into
+---@field packetInterval integer how many ticks between each sync ping (sync packet)
+---@field syncSpeed integer how many bytes will be sent per second when syncing
+---@field toSend Send[]
+---@field toReceive Receive[]
+core.SyncStream = {}
+core.SyncStream.__index = core.SyncStream
+
+---comment
+---@param game Game
+---@param id integer a numeric ID between 0 and 15
+---@param ping function the ping function send objects will hook into
+---@return SyncStream
+function core.SyncStream:new(game, id, ping)
+    self = setmetatable({}, core.SyncStream)
+    self.game = game
+    self.id = id
+    self.ping = ping
+    self.toSend = {}
+    self.toReceive = {}
+    self.packetInterval = 5
+    self.syncSpeed = 200
+    return self
+end
+
+---creates a new send object within the sync stream
+---@return Send
+function core.SyncStream:newToSend()
+    return core.Send:new(self)
+end
+
 ---@class Game
----@field id integer generated ID of this game instance
 ---@field gameTime integer this game's internal timer
 ---@field nextSyncId integer the next available sync ID
----@field syncing string? what data is currently being synced
----@field toSync string? what data has currently stored to be passively synced
----@field syncInterval integer how many ticks between each passive sync ping
----@field syncSpeed integer how many bytes will be sent per second when passively syncing. It is reccomened to keep this well under the ping limit to also allow non-passive syncing 
 ---@field worldPos Vector3 the root position where this game will exist in the world
 ---@field worldRot Vector3 the root rotation of the game relative to the world
 ---@field slots Slot[] table that contains all slots
@@ -353,13 +435,11 @@ core.Game.__index = core.Game
 ---@return Game
 function core.Game:new(worldPos, worldRot)
     self = setmetatable({}, core.Game)
-    self.id = #core.games + 1
     self.gameTime = 0
     self.nextSyncId = 0
-    self.syncing = nil
-    self.toSync = nil
-    self.syncInterval = 5
-    self.syncSpeed = 200
+
+
+
     self.slots = {}
     self.pieces = {}
     self.worldPos = worldPos
@@ -369,12 +449,35 @@ function core.Game:new(worldPos, worldRot)
         slot = core.ParamHandler:new(table.unpack(defaultSlotParams)),
         piece = core.ParamHandler:new(table.unpack(defaultPieceParams))
     }
+    self.syncStreams = {
+        passive = core.SyncStream:new(self, 0),
+        direct = core.SyncStream:new(self, 1)
+    }
+
+    self.syncStreamsIndex = {
+        [0] = "passive",
+        [1] = "direct"
+    }
 
 
     --self.root = core.Piece:new()
 
-    core.games[self.id] = self
+    core.currentGame = self
     return self
+end
+
+---creates a new syncStream
+---@param id any
+function core.Game:newSyncStream(id)
+    local syncStreamCount = #self.syncStreams
+    self.syncStreams[syncStreamCount] = core.SyncStream:new(self, syncStreamCount)
+end
+
+---returns a sync stream from a numeric ID
+---@param numericId integer a numeric ID between 0 and 15
+---@return SyncStream
+function core.Game:getSyncSteam(numericId)
+    return self.syncStreams[self.syncStreamsIndex[numericId]]
 end
 
 ---get all of this game's parameter types
@@ -396,7 +499,6 @@ function core.Game:getParamHandlers()
     return self.paramHandlers
 end
 
-
 ---updates and instantly syncs a parameter
 ---@param handlerId string
 ---@param paramId string
@@ -406,11 +508,12 @@ function core.Game:updateParam(handlerId, syncId, paramId, value)
     local paramIndex = paramHandler.paramIndex[paramId]
     local param = paramHandler.params[paramIndex]
     local paramType = param.paramType
+
     local syncIdEncoded = util.numToVarLengthInt(syncId)
     local paramIndexEncoded = util.numToVarLengthInt(paramIndex)
     local encoded = paramType.encode(value)
     local toSend = syncIdEncoded .. paramIndexEncoded .. encoded
-    
+    --- add data to table
 end
 
 ---Creates a new game slot
@@ -426,28 +529,32 @@ function core.Game:intialiseSync()
     util.numToVarLengthInt(self.nextSyncId)
 end
 
----@type Game[]
-core.games = {}
-
 local clock = 0
 function events.tick()
     clock = clock + 1
-    for _, game in pairs(core.games) do
-        game.gameTime = game.gameTime + 1
-        if clock % game.syncInterval == 0 then
-            if not game.toSync then
-                local gameTime = util.numToVarLengthInt(game.gameTime)
-                local nextSyncId = util.numToVarLengthInt(game.nextSyncId)
-                ---- timing should be generated in segments that are stored in a table
-                goto continue
-            end
-            
-            
+    local game = core.currentGame
+    if not game then return end
+    game.gameTime = game.gameTime + 1
+    -- for each active syncstream (add an is active field) send chunks. Revert if rate limited
+    for id, syncStream in pairs(game.syncStreams) do
+        if syncStream.toSend[1] and syncStream.toSend[1].isSending and syncStream.toSend[1].toSend and clock % syncStream.packetInterval == 0 then
+            local packetInterval = syncStream.packetInterval
+            local syncSpeed = syncStream.syncSpeed
+            local bytesPerPacket = math.floor(syncSpeed * (packetInterval / 20))
+            local toSend = syncStream.toSend[1].toSend
+            local currentPacket = syncStream.toSend[1].currentPacket
+            local packet = string.sub(toSend,currentPacket * bytesPerPacket, (currentPacket + 1) * bytesPerPacket)
+            syncStream.toSend[1].currentPacket = currentPacket + 1
+
+            --- need status byte too (4 bits for syncstream, 2 for isStart and isEnd, 2 free)
+            syncStream.ping()
         end
-    
-        ::continue::
     end
+    
 end
+
+-- sound event to revert when rate limited
+
 
 ---@class Slot
 ---@field syncId integer unique syncID of this slot
