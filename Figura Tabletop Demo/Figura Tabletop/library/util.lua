@@ -30,6 +30,7 @@ local intCache = {}
 ---@param integer any
 ---@return string byteString
 function util.numToVarLengthInt(integer)
+    integer = math.abs(integer)
     if intCache[integer] then return intCache[integer] end
     local bits, numBytes = util.toBits(integer)
 

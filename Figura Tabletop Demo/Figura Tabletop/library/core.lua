@@ -18,8 +18,8 @@ core.ParamType.__index = core.ParamType
 ---creates a new parameter type
 ---@generic T
 ---@param id string the ID of this parameter type
----@param decode fun(encoded: Buffer): T decodes data after it has been pinged
----@param encode fun(rawData: T): string encodes data to be pinged
+---@param decode fun(encoded: Buffer, paramTypes: ParamType[]): T decodes data after it has been pinged
+---@param encode fun(rawData: T, paramTypes: ParamType[]): string encodes data to be pinged
 ---@return ParamType<T>
 function core.ParamType:new(id, decode, encode)
     self = setmetatable({}, core.ParamType)
@@ -58,6 +58,7 @@ defaultParamTypes.boolean = core.ParamType:new("boolean",
     end
 )
 
+-- flags
 
 ---a variable length integer. The number of bytes used will vary depending on the size. Useful for compact integer storage while still allowing high numbers
 defaultParamTypes.variableLengthInteger = core.ParamType:new("variableLengthInteger",
@@ -71,46 +72,70 @@ defaultParamTypes.variableLengthInteger = core.ParamType:new("variableLengthInte
     end
 )
 
----a variable length decimal with 2 decimal places. Useful for compressed decimals with low precision
-defaultParamTypes.variableLengthDecimal = core.ParamType:new("variableLengthDecimal",
-    function(encoded)
-        local integer = util.readVariableLengthInt(encoded) / 100
-        return integer
+---a variable length integer that supports negative values though zig-zag encoding. This takes more space
+defaultParamTypes.variableLengthIntegerNeg = core.ParamType:new("variableLengthIntegerZZ",
+    function(encoded, paramTypes)
+        local decoded = paramTypes["variableLengthInteger"].decode(encoded)
+        local isPositive = decoded % 2 == 1
+        if isPositive then
+            decoded = (decoded + 1) / 2
+        else
+            decoded = -decoded / 2
+        end
+        ---@type integer
+        return decoded
     end,
 
-    function(rawData)
-        return util.numToVarLengthInt(math.floor(rawData * 100))
+    function(rawData, paramTypes)
+        if rawData >= 0 then
+            rawData = (rawData * 2) - 1
+        else
+            rawData = math.abs(rawData) * 2
+        end
+        return paramTypes["variableLengthInteger"].encode(rawData)
     end
 )
 
----a vector 2 that uses variable length integers with 2 decimal places. Useful for compressed vec2 with low precision
-defaultParamTypes.variableLengthVec3 = core.ParamType:new("variableLengthVec3",
-    function(encoded)
-        local x = util.readVariableLengthInt(encoded) / 100
-        local y = util.readVariableLengthInt(encoded) / 100
+---a variable length decimal with 2 decimal places. Useful for compressed decimals with low precision. Supports negative values
+defaultParamTypes.variableLengthDecimal = core.ParamType:new("variableLengthDecimal",
+    function(encoded, paramTypes)
+        ---@type number
+        return paramTypes["variableLengthIntegerZZ"].decode(encoded) / 100
+    end,
+
+    function(rawData, paramTypes)
+        return paramTypes["variableLengthIntegerZZ"].encode(math.floor(rawData * 100))
+    end
+)
+
+---a vector 2 that uses variable length integers with 2 decimal places. Useful for compressed vec2 with low precision. Supports negative values
+defaultParamTypes.variableLengthVec3 = core.ParamType:new("variableLengthVec2",
+    function(encoded, paramTypes)
+        local x = paramTypes["variableLengthDecimal"].decode(encoded)
+        local y = paramTypes["variableLengthDecimal"].decode(encoded)
         return vec(x, y)
     end,
 
-    function(rawData)
-        local x = util.numToVarLengthInt(math.floor(rawData.x * 100))
-        local y = util.numToVarLengthInt(math.floor(rawData.y * 100))
+    function(rawData, paramTypes)
+        local x = paramTypes["variableLengthDecimal"].encode(rawData.x)
+        local y = paramTypes["variableLengthDecimal"].encode(rawData.y)
         return x .. y
     end
 )
 
 ---a vector 3 that uses variable length integers with 2 decimal places. Useful for compressed vec3 with low precision
 defaultParamTypes.variableLengthVec3 = core.ParamType:new("variableLengthVec3",
-    function(encoded)
-        local x = util.readVariableLengthInt(encoded) / 100
-        local y = util.readVariableLengthInt(encoded) / 100
-        local z = util.readVariableLengthInt(encoded) / 100
+    function(encoded, paramTypes)
+        local x = paramTypes["variableLengthDecimal"].decode(encoded)
+        local y = paramTypes["variableLengthDecimal"].decode(encoded)
+        local z = paramTypes["variableLengthDecimal"].decode(encoded)
         return vec(x, y, z)
     end,
 
-    function(rawData)
-        local x = util.numToVarLengthInt(math.floor(rawData.x * 100))
-        local y = util.numToVarLengthInt(math.floor(rawData.y * 100))
-        local z = util.numToVarLengthInt(math.floor(rawData.z * 100))
+    function(rawData, paramTypes)
+        local x = paramTypes["variableLengthDecimal"].encode(rawData.x)
+        local y = paramTypes["variableLengthDecimal"].encode(rawData.y)
+        local z = paramTypes["variableLengthDecimal"].encode(rawData.z)
         return x .. y .. z
     end
 )
@@ -384,7 +409,7 @@ end
 
 ---@class SyncStream
 ---@field game Game the game this sync stream will be in reference to
----@field id integer a numeric ID between 0 and 15
+---@field id string the unique ID of this sync stream
 ---@field ping function the ping function send objects will hook into
 ---@field packetInterval integer how many ticks between each sync ping (sync packet)
 ---@field syncSpeed integer how many bytes will be sent per second when syncing
@@ -393,9 +418,9 @@ end
 core.SyncStream = {}
 core.SyncStream.__index = core.SyncStream
 
----comment
+---creates a new sync stream
 ---@param game Game
----@param id integer a numeric ID between 0 and 15
+---@param id string the unique ID of this sync stream
 ---@param ping function the ping function send objects will hook into
 ---@return SyncStream
 function core.SyncStream:new(game, id, ping)
@@ -404,7 +429,7 @@ function core.SyncStream:new(game, id, ping)
     self.id = id
     self.ping = ping
     self.toSend = {}
-    self.toReceive = {}
+    self.receive = nil -- THERE SHOULD ONLY BE ONE RECEIVE VALUE
     self.packetInterval = 5
     self.syncSpeed = 200
     return self
@@ -414,6 +439,14 @@ end
 ---@return Send
 function core.SyncStream:newToSend()
     return core.Send:new(self)
+end
+
+function pings.passiveSync()
+
+end
+
+function core.directSync()
+
 end
 
 ---@class Game
@@ -450,8 +483,7 @@ function core.Game:new(worldPos, worldRot)
         piece = core.ParamHandler:new(table.unpack(defaultPieceParams))
     }
     self.syncStreams = {
-        passive = core.SyncStream:new(self, 0),
-        direct = core.SyncStream:new(self, 1)
+        passive = core.SyncStream:new(self, "passive", pings.passiveSync)
     }
 
     self.syncStreamsIndex = {
@@ -467,10 +499,10 @@ function core.Game:new(worldPos, worldRot)
 end
 
 ---creates a new syncStream
----@param id any
-function core.Game:newSyncStream(id)
-    local syncStreamCount = #self.syncStreams
-    self.syncStreams[syncStreamCount] = core.SyncStream:new(self, syncStreamCount)
+---@param id string
+---@param pingFunction function
+function core.Game:newSyncStream(id, pingFunction)
+    self.syncStreams[id] = core.SyncStream:new(self, id, pingFunction)
 end
 
 ---returns a sync stream from a numeric ID
@@ -530,6 +562,7 @@ function core.Game:intialiseSync()
 end
 
 local clock = 0
+---@diagnostic disable-next-line: duplicate-set-field
 function events.tick()
     clock = clock + 1
     local game = core.currentGame
