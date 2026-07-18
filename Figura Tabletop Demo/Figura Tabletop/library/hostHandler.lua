@@ -2,7 +2,7 @@ local core = require("..core")
 local clientHandler = require("..clientHandler")
 
 
-models.model:setVisible(true)
+--models.model:setVisible(true)
 
 local mainPage = action_wheel:newPage()
 action_wheel:setPage(mainPage)
@@ -15,9 +15,7 @@ local function joinGame(userId, pingsGlobal, modelsGlobal, eventsGlobal, hostGlo
         events = eventsGlobal,
         host = hostGlobal
     }
-
-    pingsGlobal.directSync = core.directSync
-    core.currentGame:newSyncStream("direct", pingsGlobal.directSync)
+    core.currentGame.syncStreams.direct:setPingFunction(pingsGlobal.directSync)
 end
 
 function pings.test()

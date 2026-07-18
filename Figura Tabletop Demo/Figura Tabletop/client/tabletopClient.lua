@@ -1,3 +1,9 @@
+function pings.directSync()
+
+end
+
+if not host:isHost() then  return end
+
 ---deep copies a table. From http://lua-users.org/wiki/CopyTable
 ---@param origional table
 ---@return table

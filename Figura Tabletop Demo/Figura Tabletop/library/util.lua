@@ -59,7 +59,6 @@ function util.numToVarLengthInt(integer)
             end
         end
     end
-
     -- generate final byte-string
     local bitVal = 0
     local byteString = ""
@@ -70,6 +69,7 @@ function util.numToVarLengthInt(integer)
             bitVal = 0
         end
     end
+
     byteString = string.reverse(byteString)
 
     intCache[integer] = byteString
@@ -104,7 +104,6 @@ function util.variableLengthBitsToNum(bits)
         if not ((k) % 8 == 0) then
             number = number + (bits[k] * (2 ^ power))
             power = power + 1
-        else
         end
     end
     return number
