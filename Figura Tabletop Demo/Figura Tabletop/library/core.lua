@@ -25,7 +25,6 @@ end
 
 ---@class Game
 ---@field gameTime integer this game's internal timer
----@field nextSyncId integer the next available sync ID
 ---@field worldPos Vector3 the root position where this game will exist in the world
 ---@field worldRot Vector3 the root rotation of the game relative to the world
 ---@field slots Slot[] table that contains all slots
@@ -43,7 +42,6 @@ core.Game.__index = core.Game
 function core.Game:new(worldPos, worldRot)
     self = setmetatable({}, core.Game)
     self.gameTime = 0
-    self.nextSyncId = 0
 
 
 
@@ -53,8 +51,8 @@ function core.Game:new(worldPos, worldRot)
     self.worldRot = worldRot
     self.paramTypes = paramSetup.defaultParamTypes
     self.paramHandlers = {
-        slot = sync.ParamHandler:new(table.unpack(paramSetup.defaultSlotParams)),
-        piece = sync.ParamHandler:new(table.unpack(paramSetup.defaultPieceParams))
+        slot = sync.SyncType:new(table.unpack(paramSetup.defaultSlotParams)),
+        piece = sync.SyncType:new(table.unpack(paramSetup.defaultPieceParams))
     }
     self.syncStreams = {
         passive = sync.SyncStream:new(self, "passive", pings.passiveSync),
@@ -132,6 +130,7 @@ function events.tick()
     game.gameTime = game.gameTime + 1
     -- for each active syncstream (add an is active field) send chunks. Revert if rate limited
     for id, syncStream in pairs(game.syncStreams) do
+        syncStream:update()
         if syncStream.toSend[1] and syncStream.toSend[1].isSending and syncStream.toSend[1].toSend and clock % syncStream.packetInterval == 0 then
             local packetInterval = syncStream.packetInterval
             local syncSpeed = syncStream.syncSpeed
@@ -141,11 +140,10 @@ function events.tick()
             local packet = string.sub(toSend,currentPacket * bytesPerPacket, (currentPacket + 1) * bytesPerPacket)
             syncStream.toSend[1].currentPacket = currentPacket + 1
 
-            -- var length int zigzag. Negative values mean it is the final packet. 0 means its the first and clear everything else
+            
             syncStream.ping(packet)
         end
     end
-    
 end
 
 -- sound event to revert when rate limited
