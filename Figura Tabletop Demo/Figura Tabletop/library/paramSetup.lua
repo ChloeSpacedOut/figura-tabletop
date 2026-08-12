@@ -62,25 +62,12 @@ function paramSetup:new(core)
         ---a variable length integer that supports negative values though zig-zag encoding. This takes more space
         variableLengthIntegerZZ = sync.ParamType:new("variableLengthIntegerZZ",
             function(encoded, paramTypes)
-                local decoded = paramTypes["variableLengthInteger"].decode(encoded, paramTypes)
-                local isPositive = decoded % 2 == 1
-                if isPositive then
-                    decoded = (decoded + 1) / 2
-                else
-                    decoded = -decoded / 2
-                end
-                ---@type integer
-                return decoded
+                local integer = util.readVariableLengthIntZZ(encoded)
+                return integer
             end,
 
             function(rawData, paramTypes)
-                rawData = math.floor(rawData)
-                if rawData >= 0 then
-                    rawData = (rawData * 2) - 1
-                else
-                    rawData = math.abs(rawData) * 2
-                end
-                return paramTypes["variableLengthInteger"].encode(rawData, paramTypes)
+                return util.numToVarLengthIntZZ(rawData)
             end
         ),
         ---a variable length decimal with 2 decimal places. Useful for compressed decimals with low precision. Supports negative values

@@ -31,6 +31,7 @@ local intCache = {}
 ---@return string byteString
 function util.numToVarLengthInt(integer)
     integer = math.abs(integer)
+    integer = math.floor(integer)
     if intCache[integer] then return intCache[integer] end
     local bits, numBytes = util.toBits(integer)
 
@@ -74,6 +75,16 @@ function util.numToVarLengthInt(integer)
 
     intCache[integer] = byteString
     return byteString
+end
+
+function util.numToVarLengthIntZZ(number)
+    number = math.floor(number)
+    if number >= 0 then
+        number = (number * 2) - 1
+    else
+        number = math.abs(number) * 2
+    end
+    return util.numToVarLengthInt(number)
 end
 
 ---read a specified number of bits and return it as a table
@@ -123,6 +134,18 @@ function util.readVariableLengthInt(buffer)
     buffer:setPosition(startPos)
     local bits = util.readBits(buffer,endPos - startPos)
     local number = util.variableLengthBitsToNum(bits)
+    return number
+end
+
+function util.readVariableLengthIntZZ(buffer)
+    local number = util.readVariableLengthInt(buffer)
+    local isPositive = number % 2 == 1
+    if isPositive then
+        number = (number + 1) / 2
+    else
+        number = -number / 2
+    end
+    ---@type integer
     return number
 end
 
