@@ -9,6 +9,7 @@ local util = require("..util")
 ---@field syncTypes SyncType[] Table that contains all sync types.
 ---@field syncTypeIndex {string : integer} Table that contains the index of each sync type.
 ---@field paramTypes ParamType[] Table that contains all parameter types.
+---@field hookTypes HookType[] Table that contains all hook types.
 ---@field clock integer The sync library's global clock.
 ---@field receiveTimeOffset integer The offset between the client's sync clock and the avatar host's.
 ---@field lastReceivedTime integer The last clock value received through a ping. Used to detect if the host's avatar's clock has reset.
@@ -308,14 +309,14 @@ function sync.Timeline:finalise()
     for _, timeStep in ipairs(self.timeSteps) do
         local timeStepData = ""
         for syncTypeIndex, objects in pairs(timeStep.syncTypes) do
+            local syncType = sync.syncTypes[syncTypeIndex]
             local syncTypeData = ""
             for objectId, params in pairs(objects) do
                 local objectData = ""
                 for paramIndex, syncData in pairs(params) do
-                    local syncType = sync.syncTypes[syncTypeIndex]
                     local param = syncType.params[paramIndex]
                     local encodedData = param.paramType.encode(syncData, sync.paramTypes)
-                    objectData = objectData .. util.numToVarLengthInt(paramIndex) .. encodedData
+                    objectData = objectData .. util.numToVarLengthInt(paramIndex) .. encodedData 
                 end
                 objectId = util.numToVarLengthInt(objectId)
                 local objectDataLength = util.numToVarLengthInt(string.len(objectData))
@@ -432,6 +433,7 @@ function sync.Receive:finalise(finalPacketId)
         local timestepEndPos = timestepLength + buffer:getPosition()
         repeat
             local syncTypeIndex = util.readVariableLengthInt(buffer)
+            local syncType = sync.syncTypes[syncTypeIndex]
             local syncTypeLength = util.readVariableLengthInt(buffer)
             local syncTypeEndPos = syncTypeLength + buffer:getPosition()
             repeat
@@ -440,7 +442,6 @@ function sync.Receive:finalise(finalPacketId)
                 local objectEndPos = objectLength + buffer:getPosition()
                 repeat
                     local paramIndex = util.readVariableLengthInt(buffer)
-                    local syncType = sync.syncTypes[syncTypeIndex]
                     local param = syncType.params[paramIndex]
                     local paramType = param.paramType
                     local decoded = paramType.decode(buffer, sync.paramTypes)
@@ -478,6 +479,7 @@ end
 ---@field receiveDelay integer How many ticks will be waited after data is received before playing out a timeline.
 ---@field rateLimitRoleback integer How many packets will be rolled back after the figura cloud ratelimits the client.
 ---@field includeStreamId boolean If the sync stream's ID should be included when syncing data.
+---@field onFinishSend function? A funciton to run when a send object has finished sending data and is discarded.
 ---@field toSend Send[] A table that contains all of this sync stream's send objects.
 ---@field toReceive Receive[] A table that contains all of this sync stream's receive objects.
 sync.SyncStream = {}
@@ -502,6 +504,9 @@ function sync.SyncStream:new(id, ping)
     self.receiveDelay = 5
     self.rateLimitRoleback = 3
     self.includeStreamId = true
+
+    self.onFinishSend = nil
+
     self.toSend = {}
     self.toReceive = {}
     table.insert(sync.syncStreams, self)
@@ -543,26 +548,27 @@ end
 function sync.SyncStream:update()
     if not self.ping then return end
 
-    local sendInterval = self.sendInterval
-    if sendInterval > 0 then
-        for _, send in pairs(self.toSend) do
-            if send.isSending then goto continue end
-            local initTime = send.timeline.initTime
-            if sync.clock >= (initTime + sendInterval) then
-                send:finalise()
+    if host:isHost() then
+        local sendInterval = self.sendInterval
+        if sendInterval > 0 then
+            for _, send in pairs(self.toSend) do
+                if send.isSending then goto continue end
+                local initTime = send.timeline.initTime
+                if sync.clock >= (initTime + sendInterval) then
+                    send:finalise()
+                end
+                ::continue::
             end
-            ::continue::
         end
     end
-
+    
     for index, receive in pairs(self.toReceive) do
         if not receive.isReceived then goto continue end
         local timeline = receive.timeline
         if not timeline then goto continue end
-
-        repeat
+        while timeline.timeStepIndex <= #timeline.timeSteps do
             local timeStep = timeline.timeSteps[timeline.timeStepIndex]
-            if (sync.clock + sync.receiveTimeOffset) < (timeline.initTime + timeStep.timestamp + self.receiveDelay) then break end
+            if (sync.clock + sync.receiveTimeOffset) < (timeline.initTime + timeStep.timestamp + self.receiveDelay) then goto continue end
             timeline.timeStepIndex = timeline.timeStepIndex + 1
             for syncTypeIndex, objects in pairs(timeStep.syncTypes) do
                 for objectId, params in pairs(objects) do
@@ -578,9 +584,9 @@ function sync.SyncStream:update()
                     end
                 end
             end
-        until timeline.timeStepIndex == #timeline.timeSteps
+        end
 
-        if timeline.timeStepIndex == #timeline.timeSteps then
+        if timeline.timeStepIndex >= #timeline.timeSteps then
             table.remove(self.toReceive, index)
         end
 
@@ -622,6 +628,9 @@ function sync.SyncStream:update()
 
     if isFinalPacket then
         table.remove(self.toSend, 1)
+        if self.onFinishSend then
+            self:onFinishSend()
+        end
     end
 end
 
@@ -717,7 +726,7 @@ function events.on_play_sound(sound)
     for _, syncStream in pairs(sync.syncStreams) do
         local queuedSend = syncStream:getQueuedSend()
         if not queuedSend then goto continue end
-        queuedSend.currentPacket = math.max(0, queuedSend.currentPacket - syncStream.rateLimitRoleback)
+        queuedSend.currentPacket = math.max(1, queuedSend.currentPacket - syncStream.rateLimitRoleback)
 
         ::continue::
     end

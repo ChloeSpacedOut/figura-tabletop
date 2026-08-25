@@ -1,3 +1,0 @@
-function pings.passiveSync()
-
-end

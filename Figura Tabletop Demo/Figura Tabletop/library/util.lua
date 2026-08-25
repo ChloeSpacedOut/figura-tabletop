@@ -78,8 +78,8 @@ function util.numToVarLengthInt(integer)
 end
 
 function util.numToVarLengthIntZZ(number)
-    number = math.floor(number)
-    if number >= 0 then
+    number = math.ceil(number)
+    if number > 0 then
         number = (number * 2) - 1
     else
         number = math.abs(number) * 2
