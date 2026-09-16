@@ -11,21 +11,57 @@ local util = require("..util")
 ---@field paramTypes ParamType[] Table that contains all parameter types.
 ---@field hookTypes HookType[] Table that contains all hook types.
 ---@field clock integer The sync library's global clock.
+---@field nextParamPriority integer The next available parameter priority. Used when automatically determining parameter priorities.
 ---@field receiveTimeOffset integer The offset between the client's sync clock and the avatar host's.
 ---@field lastReceivedTime integer The last clock value received through a ping. Used to detect if the host's avatar's clock has reset.
 ---@field ping function? The default ping function for sync streams.
-local sync = {
-    syncStreams = {},
-    syncStreamIndex = {},
-    syncTypes = {},
-    syncTypeIndex = {},
-    paramTypes = {},
-    hookTypes = {},
-    clock = 0,
-    receiveTimeOffset = 0,
-    lastReceivedTime = 0,
-    ping = nil
-}
+local sync = {}
+sync.__index = sync
+
+---Creates a new instance of the sync library
+---@return Sync
+function sync:new()
+    setmetatable({}, sync)
+    self.syncStreams = {}
+    self.syncStreamIndex = {}
+    self.syncTypes = {}
+    self.syncTypeIndex = {}
+    self.paramTypes = {}
+    self.hookTypes = {}
+    self.clock = 0
+    self.nextParamPriority = 0
+    self.receiveTimeOffset = 0
+    self.lastReceivedTime = 0
+    self.ping = nil
+
+    self:newHookType("onReceive")
+    return self
+end
+
+---Creates a new param.
+---@param id string The unique ID of this parameter.
+---@param paramType ParamType The type of this parameter. This determines how data will be encoding and pinged.
+---@param onReceiveHook string The ID of the hook function that will be run once this parameter has been decoded.
+---@return Param
+function sync:newParam(id, paramType, onReceiveHook)
+    return self.Param:new(id, self, paramType, onReceiveHook)
+end
+
+
+---Creates a new hook type.
+---@param id string The unique ID of this hook type.
+---@return HookType
+function sync:newHookType(id)
+    return self.HookType:new(id, self)
+end
+
+---Creates a new sync stream.
+---@param id string The unique ID of this sync stream.
+---@param ping function? The ping function send objects will hook into. If no ping function is provided on creation, this will be sync stream's built in function.
+---@return SyncStream
+function sync:newSyncStream(id, ping)
+    return self.SyncStream:new(id, self, ping)
+end
 
 ---Returns a sync steeam when given its string ID.
 ---@param stringId string
@@ -51,6 +87,8 @@ end
 
 ---A hook type, used for storing and referencing functions and objects that can't be synced.
 ---@class HookType
+---@field id string The unique ID of this hook type.
+---@field sync Sync The current instance of the sync library.
 ---@field hooks {indeger: any} Table that contains all hooks.
 ---@field hookIndex {string : integer} Table that contains the index of each hook.
 sync.HookType = {}
@@ -58,13 +96,15 @@ sync.HookType.__index = sync.HookType
 
 ---Creates a new hook type.
 ---@param id string The unique ID of this hook type.
+---@param syncInstance Sync The current instance of the sync library.
 ---@return HookType
-function sync.HookType:new(id)
+function sync.HookType:new(id, syncInstance)
     setmetatable({}, sync.HookType)
     self.id = id
+    self.sync = syncInstance
     self.hooks = {}
     self.hookIndex = {}
-    sync.hookTypes[id] = self
+    syncInstance.hookTypes[id] = self
     return self
 end
 
@@ -78,14 +118,12 @@ end
 
 ---Retruns a hook when given its string ID.
 ---@param stringId string
----@return function?
+---@return any
 function sync.HookType:getHook(stringId)
     local hookIndex = self.hookIndex[stringId]
-    if not hookIndex then return end
+    assert(hookIndex, "Tried to use a hook with an invalid index")
     return self.hooks[hookIndex]
 end
-
-sync.HookType:new("onReceive")
 
 --#ENDREGION
 
@@ -134,19 +172,26 @@ end
 ---A parameter, used by a sync type.
 ---@class Param
 ---@field id string The ID of this parameter.
+---@field sync Sync The current instance of the sync library.
 ---@field paramType ParamType The type of this parameter. This determines how data will be encoding and pinged.
 ---@field onReceiveHook string The ID of the hook function that will be run once this parameter has been decoded.
+---@field priority integer The priority of this parameter. This determines what order this parameter will execute its receive hook relative to other parameters. May not be less than 0.
 sync.Param = {}
 sync.Param.__index = sync.Param
 
 ---Creates a new parameter.
 ---@param id string The unique ID of this parameter.
+---@param syncInstance Sync The current instance of the sync library.
 ---@param paramType ParamType The type of this parameter. This determines how data will be encoding and pinged.
 ---@param onReceiveHook string The ID of the hook function that will be run once this parameter has been decoded.
+---@param priority integer The priority of this parameter. This determines what order this parameter will execute its receive hook relative to other parameters.  May not be less than 0.
 ---@return Param
-function sync.Param:new(id, paramType, onReceiveHook)
+function sync.Param:new(id, syncInstance, paramType, onReceiveHook, priority)
     self = setmetatable({}, sync.Param)
     self.id = id
+    self.sync = syncInstance
+    self.priority = self.sync.nextParamPriority
+    self.sync.nextParamPriority = self.sync.nextParamPriority + 1
     self.paramType = paramType
     self.onReceiveHook = onReceiveHook
     return self
@@ -472,6 +517,7 @@ end
 ---A sync stream. This contains send and receive objects, and controls how data will be pinged. Syncstreams must be created on the host and other clients.
 ---@class SyncStream
 ---@field id string The unique ID of this sync stream.
+---@field sync Sync The current instance of the sync library.
 ---@field ping function The ping function send objects will hook into. If no ping function is provided on creation, this will be sync stream's built in function.
 ---@field packetInterval integer How many ticks will be spent waiting between between sending each packet.
 ---@field syncSpeed integer How many bytes will be sent per second when syncing.
@@ -487,11 +533,13 @@ sync.SyncStream.__index = sync.SyncStream
 
 ---Creates a new sync stream.
 ---@param id string The unique ID of this sync stream.
+---@param syncInstance Sync The current instance of the sync library.
 ---@param ping function? The ping function send objects will hook into. If no ping function is provided on creation, this will be sync stream's built in function.
 ---@return SyncStream
-function sync.SyncStream:new(id, ping)
+function sync.SyncStream:new(id, syncInstance, ping)
     self = setmetatable({}, sync.SyncStream)
     self.id = id
+    self.sync = sync
     if ping then
         self.ping = ping
     else
@@ -561,6 +609,9 @@ function sync.SyncStream:update()
             end
         end
     end
+
+    ---@type HookType
+    local onReceiveHooks = self.sync.hookTypes.onReceive
     
     for index, receive in pairs(self.toReceive) do
         if not receive.isReceived then goto continue end
@@ -570,16 +621,42 @@ function sync.SyncStream:update()
             local timeStep = timeline.timeSteps[timeline.timeStepIndex]
             if (sync.clock + sync.receiveTimeOffset) < (timeline.initTime + timeStep.timestamp + self.receiveDelay) then goto continue end
             timeline.timeStepIndex = timeline.timeStepIndex + 1
+
+            ---@type {decodedData: any, param: Param, objectId: integer, syncType: SyncType}[][]
+            local priorities = {}
+            local maxPriority = 0
+
             for syncTypeIndex, objects in pairs(timeStep.syncTypes) do
                 for objectId, params in pairs(objects) do
                     for paramIndex, decodedData in pairs(params) do
                         local syncType = sync.syncTypes[syncTypeIndex]
                         local param = syncType.params[paramIndex]
-                        ---@type HookType
-                        local onReceiveHooks = sync.hookTypes.onReceive
-                        local onReceive = onReceiveHooks:getHook(param.onReceiveHook)
+                        local priority = param.priority
+                        if priority > maxPriority then
+                            maxPriority = priority
+                        end
+                        if not priorities[priority] then
+                            priorities[priority] = {}
+                        end
+                        table.insert(priorities[priority], {
+                            decodedData = decodedData,
+                            param = param,
+                            objectId = objectId,
+                            syncType = syncType
+                        })
+
+                    end
+                end
+            end
+
+            for i = 0, maxPriority do
+                local updates = priorities[i]
+                if updates then
+                    for _, updateData in pairs(updates) do
+                        --log(updateData)
+                        local onReceive = onReceiveHooks:getHook(updateData.param.onReceiveHook)
                         if onReceive then
-                            onReceive(decodedData, param.id, objectId, syncType.id, false)
+                            onReceive(updateData.decodedData, updateData.param.id, updateData.objectId, updateData.syncType.id, false)
                         end
                     end
                 end
@@ -660,7 +737,7 @@ function sync.SyncStream:localUpdate(syncTypeId, objectId, paramId, syncData)
     local param = syncType:getParam(paramId)
 
     ---@type HookType
-    local onReceiveHooks = sync.hookTypes.onReceive
+    local onReceiveHooks = self.sync.hookTypes.onReceive
     local onReceive = onReceiveHooks:getHook(param.onReceiveHook)
     if not onReceive then return end
     onReceive(syncData, paramId, objectId, syncTypeId, true)

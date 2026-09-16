@@ -1,5 +1,4 @@
 local util = require("..util")
-local sync = require("..sync")
 
 ---@class SyncTypeSetup
 local SyncTypeSetup = {}
@@ -7,6 +6,10 @@ local SyncTypeSetup = {}
 ---comment
 ---@param core TabletopCore
 function SyncTypeSetup:create(core)
+    local game = core.currentGame
+    assert(game, "This should never happen?")
+    local sync = game.sync
+
     ---a string. Every character costs 1 byte to use spairingly
     sync.ParamType:new("string",
         function(encoded, paramTypes)
@@ -37,7 +40,7 @@ function SyncTypeSetup:create(core)
     sync.ParamType:new("flags",
         ----- THIS NEEDS TO BE CREATED
         function(encoded, paramTypes)
-            local flagByte = encoded:readBase64(1)
+            local flagByte = string.byte(encoded:readByteArray(1))
             ---@type boolean[]
             local flags = {}
             for i = 0, 7 do
@@ -46,10 +49,15 @@ function SyncTypeSetup:create(core)
             return flags
         end,
         function(rawData, paramTypes)
-            table.sort(rawData)
+            local keySort = {}
+            for k, _ in pairs(rawData) do
+                table.insert(keySort, k)
+            end
+            table.sort(keySort)
             local bitVal = 0
             for i = 0, 7 do
-                bitVal = bitVal + rawData[i] * 2 ^ i
+                local bool = rawData[keySort[i + 1]] and 1 or 0
+                bitVal = bitVal + bool * 2 ^ i
             end
             return string.char(bitVal)
         end
@@ -222,7 +230,7 @@ function SyncTypeSetup:create(core)
             local minY = paramTypes["variableLengthDecimal"].decode(encoded, paramTypes)
             local maxX = paramTypes["variableLengthDecimal"].decode(encoded, paramTypes)
             local maxY = paramTypes["variableLengthDecimal"].decode(encoded, paramTypes)
-            return core.Dimensions:new(vec(minX, minY), vec(maxX, maxY))
+            return {min = vec(minX, minY), max = vec(maxX, maxY)}
         end,
         function(rawData, paramTypes)
             local minX = paramTypes["variableLengthDecimal"].encode(rawData.min.x, paramTypes)
@@ -238,34 +246,95 @@ function SyncTypeSetup:create(core)
     ---@type HookType
     local onReceive = sync.hookTypes.onReceive
 
-    onReceive:add("doNothing", function(a, b, c, d)
-        log(a, b, c, d)
+    onReceive:add("doNothing", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
+        --log(data, paramId, objectId, syncTypeId, isLocalUpdate)
+
     end)
 
-    
-    local slot = sync.SyncType:new("slot")
-    
-    slot:addParam(sync.Param:new("id", sync.paramTypes.variableLengthInteger, "doNothing"))
-    slot:addParam(sync.Param:new("parent", sync.paramTypes.variableLengthInteger, "doNothing"))
-    slot:addParam(sync.Param:new("contents", sync.paramTypes.variableLengthTable, "doNothing"))
-    slot:addParam(sync.Param:new("contentsLimit", sync.paramTypes.variableLengthInteger, "doNothing"))
-    slot:addParam(sync.Param:new("dimensions", sync.paramTypes.dimenions, "doNothing"))
-    slot:addParam(sync.Param:new("position", sync.paramTypes.variableLengthVec2, "doNothing"))
-    slot:addParam(sync.Param:new("lenience", sync.paramTypes.dimenions, "doNothing"))
-    slot:addParam(sync.Param:new("flags", sync.paramTypes.flags, "doNothing"))
+    onReceive:add("playSpaces", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
+        if table.concat(game.playSpaces, ",") ~= table.concat(data, ",") then
+            for _, playSpaceSlotId in pairs(data) do
+                if not game[playSpaceSlotId] then
+                    game.slots[objectId].part = game.model:newPart(playSpaceSlotId)
+                end
+            end
 
+            game.playSpaces = data
+        end
+    end)
+
+    onReceive:add("pieceFlags", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
+        local flagOutput = {}
+        flagOutput.canInteract = data[1]
+        flagOutput.canMove = data[2]
+        flagOutput.canSelect = data[3]
+        flagOutput.isDeleted = data[4]
+        flagOutput.isSelected = data[5]
+        flagOutput.unused1 = data[6]
+        flagOutput.unused2 = data[7]
+        flagOutput.visible = data[8]
+        --log(flagOutput)
+
+        -- TO DO: add flags
+        -- make sync an object
+
+    end)
+
+    onReceive:add("slotId", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
+        game.slots[objectId] = core.Slot:new(game, objectId)
+    end)
+
+    onReceive:add("pieceId", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
+        game.pieces[objectId] = core.Piece:new(game, objectId)
+    end)
+
+    onReceive:add("generic", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
+        game[syncTypeId .. "s"][objectId][paramId] = data
+    end)
+
+    onReceive:add("model", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
+        if data ~= game.pieces[objectId] then
+            ---@type HookType
+            local modelHook = sync.hookTypes.model
+            ---@type ModelPart
+            local model = modelHook.hooks[data]
+            local parent = game.pieces[objectId].parent
+            if parent and game.slots[parent].part then
+                game.slots[parent].part:addChild(model:copy(objectId)) -- CHANGE TO A DEEPCOPY
+            end
+
+            -- deepcopy the model part. Save to parent.
+        end
+
+    end)
+
+
+    local gameMeta = sync.SyncType:new("gameMeta")
+    local slot = sync.SyncType:new("slot")
     local piece = sync.SyncType:new("piece")
 
-    piece:addParam(sync.Param:new("id", sync.paramTypes.variableLengthInteger, "doNothing"))
-    piece:addParam(sync.Param:new("parent", sync.paramTypes.variableLengthInteger, "doNothing"))
-    piece:addParam(sync.Param:new("model", sync.paramTypes.variableLengthInteger, "doNothing"))
-    piece:addParam(sync.Param:new("dimensions", sync.paramTypes.dimenions, "doNothing"))
-    piece:addParam(sync.Param:new("height", sync.paramTypes.variableLengthDecimal, "doNothing"))
-    piece:addParam(sync.Param:new("position", sync.paramTypes.variableLengthVec2, "doNothing"))
-    piece:addParam(sync.Param:new("slots", sync.paramTypes.variableLengthTable, "doNothing"))
-    piece:addParam(sync.Param:new("contents", sync.paramTypes.variableLengthTable, "doNothing"))
-    piece:addParam(sync.Param:new("contentsLimit", sync.paramTypes.variableLengthInteger, "doNothing"))
-    piece:addParam(sync.Param:new("flags", sync.paramTypes.flags, "doNothing"))
+    slot:addParam(sync:newParam("id", sync.paramTypes.variableLengthInteger, "slotId"))
+    piece:addParam(sync:newParam("id", sync.paramTypes.variableLengthInteger, "pieceId"))
+
+    gameMeta:addParam(sync:newParam("playSpaces", sync.paramTypes.variableLengthTable, "playSpaces"))
+
+    slot:addParam(sync:newParam("parent", sync.paramTypes.variableLengthInteger, "generic"))
+    slot:addParam(sync:newParam("contents", sync.paramTypes.variableLengthTable, "doNothing"))
+    slot:addParam(sync:newParam("contentsLimit", sync.paramTypes.variableLengthInteger, "generic"))
+    slot:addParam(sync:newParam("dimensions", sync.paramTypes.dimenions, "generic"))
+    slot:addParam(sync:newParam("position", sync.paramTypes.variableLengthVec2, "doNothing"))
+    slot:addParam(sync:newParam("lenience", sync.paramTypes.dimenions, "generic"))
+    slot:addParam(sync:newParam("flags", sync.paramTypes.flags, "doNothing"))
+
+    piece:addParam(sync:newParam("parent", sync.paramTypes.variableLengthInteger, "generic"))
+    piece:addParam(sync:newParam("model", sync.paramTypes.variableLengthInteger, "model"))
+    piece:addParam(sync:newParam("dimensions", sync.paramTypes.dimenions, "generic"))
+    piece:addParam(sync:newParam("height", sync.paramTypes.variableLengthDecimal, "generic"))
+    piece:addParam(sync:newParam("position", sync.paramTypes.variableLengthVec2, "doNothing"))
+    piece:addParam(sync:newParam("slots", sync.paramTypes.variableLengthTable, "doNothing"))
+    piece:addParam(sync:newParam("contents", sync.paramTypes.variableLengthTable, "generic"))
+    piece:addParam(sync:newParam("contentsLimit", sync.paramTypes.variableLengthInteger, "generic"))
+    piece:addParam(sync:newParam("flags", sync.paramTypes.flags, "pieceFlags"))
 end
 
 return SyncTypeSetup
