@@ -18,7 +18,7 @@ local util = require("..util")
 local sync = {}
 sync.__index = sync
 
----Creates a new instance of the sync library
+---Creates a new instance of the sync library.
 ---@return Sync
 function sync:new()
     setmetatable({}, sync)
@@ -34,8 +34,30 @@ function sync:new()
     self.lastReceivedTime = 0
     self.ping = nil
 
+    events.ON_PLAY_SOUND:register(self.on_play_sound)
+
     self:newHookType("onReceive")
     return self
+end
+
+---Ticks the current instance of the sync library. Must be run every tick.
+function sync:tick()
+    self.clock = self.clock + 1
+    for _, syncStream in pairs(self.syncStreams) do
+        syncStream:update()
+    end
+end
+
+---comment
+---@param id string
+function sync:on_play_sound(id)
+    if id ~= "minecraft:ui.toast.in" then return end
+    for _, syncStream in pairs(sync.syncStreams) do
+        local queuedSend = syncStream:getQueuedSend()
+        if queuedSend then
+            queuedSend.currentPacket = math.max(1, queuedSend.currentPacket - syncStream.rateLimitRoleback)
+        end
+    end
 end
 
 ---Creates a new param.
@@ -184,14 +206,18 @@ sync.Param.__index = sync.Param
 ---@param syncInstance Sync The current instance of the sync library.
 ---@param paramType ParamType The type of this parameter. This determines how data will be encoding and pinged.
 ---@param onReceiveHook string The ID of the hook function that will be run once this parameter has been decoded.
----@param priority integer The priority of this parameter. This determines what order this parameter will execute its receive hook relative to other parameters.  May not be less than 0.
+---@param priority integer? The priority of this parameter. This determines what order this parameter will execute its receive hook relative to other parameters.  May not be less than 0.
 ---@return Param
 function sync.Param:new(id, syncInstance, paramType, onReceiveHook, priority)
     self = setmetatable({}, sync.Param)
     self.id = id
     self.sync = syncInstance
-    self.priority = self.sync.nextParamPriority
-    self.sync.nextParamPriority = self.sync.nextParamPriority + 1
+    if priority then
+        self.priority = priority
+    else
+        self.priority = self.sync.nextParamPriority
+        self.sync.nextParamPriority = self.sync.nextParamPriority + 1
+    end
     self.paramType = paramType
     self.onReceiveHook = onReceiveHook
     return self
@@ -592,26 +618,31 @@ function sync.SyncStream:setPingFunction(ping)
     self.ping = ping
 end
 
----Updates this sync stream and sends queued packets.
-function sync.SyncStream:update()
-    if not self.ping then return end
-
-    if host:isHost() then
-        local sendInterval = self.sendInterval
-        if sendInterval > 0 then
-            for _, send in pairs(self.toSend) do
-                if send.isSending then goto continue end
-                local initTime = send.timeline.initTime
-                if sync.clock >= (initTime + sendInterval) then
-                    send:finalise()
-                end
-                ::continue::
+---Searches for any toSend objects that are ready to be finalised and finalise them.
+function sync.SyncStream:finaliseToSend()
+    local syncInstance = self.sync
+    local clock = syncInstance.clock
+    local sendInterval = self.sendInterval
+    if sendInterval > 0 then
+        for _, send in pairs(self.toSend) do
+            if send.isSending then goto continue end
+            local initTime = send.timeline.initTime
+            if clock >= (initTime + sendInterval) then
+                send:finalise()
             end
+            ::continue::
         end
     end
+end
+
+---Plays through this syncStream's timelines.
+function sync.SyncStream:playTimeline()
+    local syncInstance = self.sync
+    local clock = syncInstance.clock
+    local receiveTimeOffset = syncInstance.receiveTimeOffset
 
     ---@type HookType
-    local onReceiveHooks = self.sync.hookTypes.onReceive
+    local onReceiveHooks = syncInstance.hookTypes.onReceive
     
     for index, receive in pairs(self.toReceive) do
         if not receive.isReceived then goto continue end
@@ -619,7 +650,7 @@ function sync.SyncStream:update()
         if not timeline then goto continue end
         while timeline.timeStepIndex <= #timeline.timeSteps do
             local timeStep = timeline.timeSteps[timeline.timeStepIndex]
-            if (sync.clock + sync.receiveTimeOffset) < (timeline.initTime + timeStep.timestamp + self.receiveDelay) then goto continue end
+            if (clock + receiveTimeOffset) < (timeline.initTime + timeStep.timestamp + self.receiveDelay) then goto continue end
             timeline.timeStepIndex = timeline.timeStepIndex + 1
 
             ---@type {decodedData: any, param: Param, objectId: integer, syncType: SyncType}[][]
@@ -669,8 +700,11 @@ function sync.SyncStream:update()
 
         ::continue::
     end
+end
 
-    if not (sync.clock % self.packetInterval == 0) then return end
+---Ping queued and finalised toSend objects.
+function sync.SyncStream:pingFinalisedToSend()
+    local syncInstance = self.sync
     local queuedSend = self:getQueuedSend()
     if not queuedSend then return end
     if not queuedSend.isSending then return end
@@ -697,7 +731,7 @@ function sync.SyncStream:update()
     queuedSend.currentPacket = queuedSend.currentPacket + 1
 
     if self.includeStreamId then
-        local syncStreamIndex = sync.syncStreamIndex[self.id]
+        local syncStreamIndex = syncInstance.syncStreamIndex[self.id]
         self.ping(packet, syncStreamIndex)
     else
         self.ping(packet)
@@ -708,6 +742,21 @@ function sync.SyncStream:update()
         if self.onFinishSend then
             self:onFinishSend()
         end
+    end
+end
+
+---Updates this sync stream and sends queued packets.
+function sync.SyncStream:update()
+    if not self.ping then return end
+
+    if host:isHost() then
+        self:finaliseToSend()
+        local syncInstance = self.sync
+        local clock = syncInstance.clock
+        if not (clock % self.packetInterval == 0) then return end
+        self:pingFinalisedToSend()
+    else
+        self:playTimeline()
     end
 end
 
@@ -783,33 +832,4 @@ end
 --#ENDREGION
 --#ENDREGION
 
---#REGION Events
---#REGION Tick
-
----@diagnostic disable-next-line: duplicate-set-field
-function events.tick()
-    sync.clock = sync.clock + 1
-    for _, syncStream in pairs(sync.syncStreams) do
-        syncStream:update()
-    end
-end
-
---#ENDREGION
-
---#REGION Play Sound
-
----@diagnostic disable-next-line: duplicate-set-field
-function events.on_play_sound(sound)
-    for _, syncStream in pairs(sync.syncStreams) do
-        local queuedSend = syncStream:getQueuedSend()
-        if not queuedSend then goto continue end
-        queuedSend.currentPacket = math.max(1, queuedSend.currentPacket - syncStream.rateLimitRoleback)
-
-        ::continue::
-    end
-end
-
 return sync
-
---#ENDREGION
---#ENDREGION

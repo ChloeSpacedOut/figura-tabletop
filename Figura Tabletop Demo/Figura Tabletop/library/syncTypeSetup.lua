@@ -5,8 +5,8 @@ local SyncTypeSetup = {}
 
 ---comment
 ---@param core TabletopCore
-function SyncTypeSetup:create(core)
-    local game = core.currentGame
+---@param game Game
+function SyncTypeSetup:create(core, game)
     assert(game, "This should never happen?")
     local sync = game.sync
 
@@ -215,11 +215,30 @@ function SyncTypeSetup:create(core)
         end,
         function(rawData, paramTypes)
             local values = ""
-            for _, id in pairs(rawData) do
-                values = values .. util.numToVarLengthInt(id)
+            for _, int in pairs(rawData) do
+                values = values .. util.numToVarLengthInt(int)
             end
             local dataLength = util.numToVarLengthInt(string.len(values))
             return dataLength .. values
+        end
+    )
+
+    ---a UUID
+    sync.ParamType:new("UUID",
+        function(encoded, paramTypes)
+            local intArray = {}
+            for i = 1, 4 do
+                intArray[i] = util.readVariableLengthIntZZ(encoded)
+            end
+            return client.intUUIDToString(table.unpack(intArray))
+        end,
+        function(rawData, paramTypes)
+            local uuid = ""
+            local intArray = table.pack(client.uuidToIntArray(rawData))
+            for i = 1, 4 do
+                uuid = uuid .. util.numToVarLengthIntZZ(intArray[i])
+            end
+            return uuid
         end
     )
 
@@ -246,6 +265,29 @@ function SyncTypeSetup:create(core)
     ---@type HookType
     local onReceive = sync.hookTypes.onReceive
 
+    onReceive:add("newGame", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
+
+        if core.currentGame and core.currentGame.id == data then return end
+
+        if core.currentGame and core.currentGame.id ~= data then
+            core.currentGame:remove()
+        end
+
+        core:newGame(data)
+    end)
+
+    onReceive:add("gamePos", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
+        if core.currentGame.position == data then return end
+        core.currentGame.position = data
+        core.currentGame.model:setPos(data * 16)
+    end)
+
+    onReceive:add("gameRot", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
+        if core.currentGame.rotation == data then return end
+        core.currentGame.rotation = data
+        core.currentGame.model:setRot(data)
+    end)
+
     onReceive:add("doNothing", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
         --log(data, paramId, objectId, syncTypeId, isLocalUpdate)
 
@@ -253,12 +295,6 @@ function SyncTypeSetup:create(core)
 
     onReceive:add("playSpaces", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
         if table.concat(game.playSpaces, ",") ~= table.concat(data, ",") then
-            for _, playSpaceSlotId in pairs(data) do
-                if not game[playSpaceSlotId] then
-                    game.slots[objectId].part = game.model:newPart(playSpaceSlotId)
-                end
-            end
-
             game.playSpaces = data
         end
     end)
@@ -298,9 +334,15 @@ function SyncTypeSetup:create(core)
             local modelHook = sync.hookTypes.model
             ---@type ModelPart
             local model = modelHook.hooks[data]
-            local parent = game.pieces[objectId].parent
-            if parent and game.slots[parent].part then
-                game.slots[parent].part:addChild(model:copy(objectId)) -- CHANGE TO A DEEPCOPY
+            local parentSlotID = game.pieces[objectId].parent
+            
+            if game.playSpaces[parentSlotID] and (not game.slots[parentSlotID].part) then
+                game.slots[objectId].part = game.model:newPart("playspace-"..parentSlotID)
+            end
+
+
+            if parentSlotID and game.slots[parentSlotID].part then
+                game.slots[parentSlotID].part:addChild(model:copy(objectId)) -- CHANGE TO A DEEPCOPY
             end
 
             -- deepcopy the model part. Save to parent.
@@ -313,10 +355,14 @@ function SyncTypeSetup:create(core)
     local slot = sync.SyncType:new("slot")
     local piece = sync.SyncType:new("piece")
 
-    slot:addParam(sync:newParam("id", sync.paramTypes.variableLengthInteger, "slotId"))
-    piece:addParam(sync:newParam("id", sync.paramTypes.variableLengthInteger, "pieceId"))
+    gameMeta:addParam(sync:newParam("id", sync.paramTypes.UUID, "newGame"))
+    gameMeta:addParam(sync:newParam("position", sync.paramTypes.variableLengthVec3, "gamePos"))
+    gameMeta:addParam(sync:newParam("rotation", sync.paramTypes.variableLengthVec3, "gameRot"))
 
     gameMeta:addParam(sync:newParam("playSpaces", sync.paramTypes.variableLengthTable, "playSpaces"))
+
+    slot:addParam(sync:newParam("id", sync.paramTypes.variableLengthInteger, "slotId"))
+    piece:addParam(sync:newParam("id", sync.paramTypes.variableLengthInteger, "pieceId"))
 
     slot:addParam(sync:newParam("parent", sync.paramTypes.variableLengthInteger, "generic"))
     slot:addParam(sync:newParam("contents", sync.paramTypes.variableLengthTable, "doNothing"))

@@ -1,44 +1,21 @@
-local clientHandler = require("..clientHandler")
 
-
---models.model:setVisible(true)
+local tabletopCore = require("...library.core")
 
 local mainPage = action_wheel:newPage()
 action_wheel:setPage(mainPage)
 
-local function joinGame(userId, pingsGlobal, modelsGlobal, eventsGlobal, hostGlobal)
-    clientHandler.tabletopClient = {
-        userId = userId,
-        pings = pingsGlobal,
-        models = modelsGlobal,
-        events = eventsGlobal,
-        host = hostGlobal
-    }
-    core.currentGame.syncStreams.direct:setPingFunction(pingsGlobal.directSync)
-end
-
-function pings.test()
-
-end
-
-function pings.newGame()
-     local tabletop = {
-            game = {
-                id = client.generateUUID(),
-                location = player:getPos(),
-                open = true,
-                joinGame = joinGame
-            }
-        }
-        avatar:store("tabletop", tabletop)
-end
-
 
 mainPage:newAction()
     :setTitle("Place Game")
-    :onLeftClick(pings.newGame)
+    :onLeftClick(function ()
+        local game = tabletopCore:newGame()
+        game.position = player:getPos()
+    end)
 
 mainPage:newAction()
     :setTitle("Remove Game")
+    :onLeftClick(function ()
+        tabletopCore.currentGame:remove()
+    end)
 
 

@@ -1,5 +1,5 @@
 local syncTypeSetup = require("..syncTypeSetup")
-local syncHandler = require("..syncHandler")
+local clientHandler = require("..clientHandler")
 local sync = require("..sync")
 
 ---@class TabletopCore
@@ -8,11 +8,40 @@ local core = {
     currentGame = nil
 }
 
+---creates a new game
+---@param uuid string? Unique ID of this game
+function core:newGame(uuid)
+    self.currentGame = core.Game:new(uuid)
+    return self.currentGame
+end
+
+---Function that runs when a new game is created
+---@param game Game
+function core.onNewGame(game) end
+
+local function joinGame(userId, pingsGlobal, modelsGlobal, eventsGlobal, hostGlobal)
+    clientHandler.tabletopClient = {
+        userId = userId,
+        pings = pingsGlobal,
+        models = modelsGlobal,
+        events = eventsGlobal,
+        host = hostGlobal
+    }
+    core.currentGame.syncStreams.direct:setPingFunction(pingsGlobal.directSync)
+end
+
+---Avatar variables to be stored alongside a tabletop game.
+---@class AvatarVarGameInfo
+---@field id string The UUID of this tabletop game
+---@field position Vector3 The position in the world of this tabletop game
+---@field open boolean If this tabletop game is currently open.
+---@field joinGame function A function which when run lets you join the game.
+
 ---@class Game
 ---@field sync Sync this game's instance of the sync library
 ---@field gameTime integer this game's internal timer
----@field worldPos Vector3 the root position where this game will exist in the world
----@field worldRot Vector3 the root rotation of the game relative to the world
+---@field postion Vector3 the root position where this game will exist in the world
+---@field rotation Vector3 the root rotation of the game relative to the world
 ---@field slots Slot[] table that contains all slots
 ---@field pieces Piece[] table that contains all pieces
 ---@field playSpaces Slot[] table that contains all playspace slots
@@ -21,18 +50,24 @@ core.Game = {}
 core.Game.__index = core.Game
 
 ---creates a new game
----@param postion Vector3 the root position where this game will exist in the world
----@param rotation Vector3 the root rotation of the game relative to the world
+---@param uuid string? Unique ID of this game
 ---@return Game
-function core.Game:new(postion, rotation)
+function core.Game:new(uuid)
     self = setmetatable({}, core.Game)
 
     self.sync = sync:new()
     self.sync:newHookType("model")
+
+    if uuid then
+        self.id = uuid
+    else
+        self.id = client.intUUIDToString(client.generateUUID())
+    end
+    
     self.gameTime = 0
 
-    self.position = postion
-    self.rotation = rotation
+    self.position = vec(0, 0, 0)
+    self.rotation = vec(0, 0, 0)
     self.scale = 1
 
     self.slots = {}
@@ -41,13 +76,75 @@ function core.Game:new(postion, rotation)
 
     self.model = models:newPart("tabletopRoot", "WORLD")
 
-    --self.root = core.Piece:new()
-
     core.currentGame = self
 
-    syncTypeSetup:create(core)
-    self.syncHandler = syncHandler:setup(self)
+    syncTypeSetup:create(core, self)
+
+    self.passiveSync = self.sync:newSyncStream("passiveSync", pings.passiveSync)
+    self.passiveSync.includeStreamId = false
+
+    core.onNewGame(self)
+
+    local tabletop = {
+        ---@type AvatarVarGameInfo
+        game = {
+            id = self.id,
+            position = vec(0, 0, 0),
+            open = true,
+            joinGame = joinGame
+        }
+    }
+    avatar:store("tabletop", tabletop)
+
     return self
+end
+
+function core.Game:remove()
+    avatar:store("tabletop", nil)
+end
+
+function core.Game:tick()
+    self.sync:tick()
+
+    self.gameTime = self.gameTime + 1
+
+    if not host:isHost() then return end
+    if not self.passiveSync then return end
+    if not self.passiveSync:getNewestSend() then
+        self:doPassiveSync()
+    end
+end
+
+local function sendSyncTypeData(syncStream, syncType, data, isSingleInstance)
+    if isSingleInstance then
+        for paramId, _ in pairs(syncType.paramIndex) do
+            local syncData = data[paramId]
+            if syncData then
+                syncStream:send(syncType.id, 1, paramId, syncData)
+            end
+        end
+    else
+        for objectId, object in pairs(data) do
+            for paramId, _ in pairs(syncType.paramIndex) do
+                local syncData = object[paramId]
+                if syncData then
+                    syncStream:send(syncType.id, objectId, paramId, syncData)
+                end
+            end
+        end
+    end
+end
+
+function core.Game:doPassiveSync()
+    sendSyncTypeData(self.passiveSync, self.sync:getSyncType("gameMeta"), self, true)
+    sendSyncTypeData(self.passiveSync, self.sync:getSyncType("piece"), self.pieces, false)
+    sendSyncTypeData(self.passiveSync, self.sync:getSyncType("slot"), self.slots, false)
+end
+
+function core.Game:clientSetup(pingFunction)
+    local directSync = self.sync:newSyncStream("directSync", pingFunction)
+    directSync.includeStreamId = false
+    return directSync
 end
 
 function core.Game:registerModel(id, model)
@@ -82,15 +179,6 @@ function core.Game:newPlaySpace()
     table.insert(self.slots, slot)
     table.insert(self.playSpaces, id)
     return slot
-end
-
----@diagnostic disable-next-line: duplicate-set-field
-function events.tick()
-    local game = core.currentGame
-    if not game then return end
-    game.gameTime = game.gameTime + 1
-
-    game.syncHandler:update()
 end
 
 ---@class SlotFlags
@@ -204,5 +292,31 @@ end
 function core.Piece:update(paramId, value)
     self.game:updateParam("piece", paramId, value)
 end
+
+
+function events.tick()
+    if core.currentGame then
+        core.currentGame:tick()
+    end
+end
+
+function events.on_play_sound(id)
+    if core.currentGame then
+        core.currentGame.sync:on_play_sound(id)
+    end
+end
+
+function pings.passiveSync(syncData)
+    if not core.currentGame then
+        local emptyID = client.intUUIDToString(0,0,0,0)
+        core:newGame(emptyID)
+    end
+    local syncInstance = core.currentGame.sync
+    local passiveSync = syncInstance:getSyncStream("passiveSync")
+
+    if not passiveSync then return end
+    passiveSync:receive(syncData)
+end
+
 
 return core

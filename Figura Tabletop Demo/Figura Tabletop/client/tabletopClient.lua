@@ -2,6 +2,14 @@ function pings.directSync()
 
 end
 
+---Avatar variables to be stored alongside a tabletop game.
+---@class AvatarGameInfo
+---@field id string The UUID of this tabletop game
+---@field position Vector3 The position in the world of this tabletop game
+---@field open boolean If this tabletop game is currently open.
+---@field joinProgress number Client determined progress for crouching to join the game.
+---@field joinGame function A function which when run lets you join the game.
+
 if not host:isHost() then  return end
 
 ---deep copies a table. From http://lua-users.org/wiki/CopyTable
@@ -24,6 +32,8 @@ end
 
 
 local isInGame = false
+
+---@type AvatarGameInfo[]
 local openGames = {}
 
 local function joinGame(gameId, game)
@@ -59,8 +69,7 @@ local function updateOpenGames()
         if isInGame then goto continue end
 
         game.joinProgress = math.clamp(game.joinProgress - 0.01, 0, 1)
-        ---@type Vector3
-        local distanceFromPlayer =  (game.location - player:getPos()):length()
+        local distanceFromPlayer =  (game.position - player:getPos()):length()
         if player:isCrouching() and (distanceFromPlayer < 2) then
             game.joinProgress = math.clamp(game.joinProgress + 0.03, 0, 1)
         end
