@@ -36,10 +36,6 @@ local isInGame = false
 ---@type AvatarGameInfo[]
 local openGames = {}
 
-local function joinGame(gameId, game)
-    game.joinGame(avatar:getUUID(), pings, models, events, host)
-end
-
 
 local function updateOpenGames()
     local avatarVars = world.avatarVars()
@@ -50,11 +46,11 @@ local function updateOpenGames()
         
         
         local tabletop = vars.tabletop
-        if not tabletop.game then goto continue end
-        existingGames[tabletop.game.id] = true
-        if tabletop.game.open and (not openGames[tabletop.game.id]) then
-           openGames[tabletop.game.id] = deepcopyTable(tabletop.game)
-           openGames[tabletop.game.id].joinProgress = 0
+        if not tabletop then goto continue end
+        existingGames[tabletop.id] = true
+        if tabletop.open and (not openGames[tabletop.id]) then
+           openGames[tabletop.id] = deepcopyTable(tabletop)
+           openGames[tabletop.id].joinProgress = 0
         end
         ::continue::
     end
@@ -75,7 +71,7 @@ local function updateOpenGames()
         end
         
         if math.floor(game.joinProgress) == 1 then
-            joinGame(gameId, game)
+            game.joinGame(avatar:getUUID(), pings, models, events, host)
             isInGame = true
         end
 
@@ -86,6 +82,5 @@ end
 ---@diagnostic disable-next-line: duplicate-set-field
 function events.tick()
     updateOpenGames()
-    
 
 end

@@ -4,12 +4,15 @@ function tabletopCore.onNewGame(game)
     game:registerModel("test", models["Figura Tabletop"].game.test.scout_launcher)
 
     if host:isHost() then
-
-        local playspace = game:newPlaySpace()
+        game:setLocalOnly(true)
+        
+        local playspaceSlot = game:newPlaySpace()
         local testPiece = game:newPiece()
-        testPiece.model = game.sync.hookTypes.model.hookIndex.test
-        testPiece.parent = playspace.id
-        table.insert(playspace.contents, testPiece.id)
+        testPiece:setModel("test")
+        playspaceSlot:addPiece(testPiece)
+
+        game:setLocalOnly(false)
+        
         
     end
 end 

@@ -1,14 +1,38 @@
 ---@class ClientHandler
----@field client TabletopClient
-local clientHandler = {}
+---@field directSync SyncStream
+local ClientHandler = {}
+ClientHandler.__index = ClientHandler
 
----@class TabletopClient
----@field userId string client's user ID
----@field pings table client's PingAPI global
----@field models ModelPart client's ModelAPI global
----@field events EventsAPI client's EventsAPI global
----@field host HostAPI client's HostAPI global
-clientHandler.tabletopClient =  nil
+---comment
+---@param core any
+---@param userId any
+---@param pingsGlobal any
+---@param modelsGlobal any
+---@param eventsGlobal any
+---@param hostGlobal any
+---@return ClientHandler
+function ClientHandler:new(core, userId, pingsGlobal, modelsGlobal, eventsGlobal, hostGlobal)
+    setmetatable({}, ClientHandler)
+    self.core = core
+    self.userId = userId
+    self.pings = pingsGlobal
+    self.models = modelsGlobal
+    self.events = eventsGlobal
+    self.host = hostGlobal
 
 
-return clientHandler
+    self.directSync = core.currentGame.sync:newSyncStream("directSync")
+    self.directSync.includeStreamId = false
+    self.directSync:setPingFunction(pingsGlobal.directSync)
+
+    return self
+end
+
+function ClientHandler:tick()
+    
+end
+
+
+
+
+return ClientHandler

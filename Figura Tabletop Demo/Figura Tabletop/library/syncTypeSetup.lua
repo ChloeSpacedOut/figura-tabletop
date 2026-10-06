@@ -6,9 +6,19 @@ local SyncTypeSetup = {}
 ---comment
 ---@param core TabletopCore
 ---@param game Game
-function SyncTypeSetup:create(core, game)
+function SyncTypeSetup:new(core, game)
     assert(game, "This should never happen?")
     local sync = game.sync
+
+    ---no data
+    sync.ParamType:new("empty",
+        function(encoded, paramTypes)
+            return ""
+        end,
+        function(rawData, paramTypes)
+            return ""
+        end
+    )
 
     ---a string. Every character costs 1 byte to use spairingly
     sync.ParamType:new("string",
@@ -150,7 +160,6 @@ function SyncTypeSetup:create(core, game)
             buffer:setPosition(0)
             local encodedInt = buffer:readByteArray(4)
             buffer:close()
-            --log(encodedInt)
             return encodedInt
         end
     )
@@ -277,9 +286,19 @@ function SyncTypeSetup:create(core, game)
     end)
 
     onReceive:add("gamePos", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
-        if core.currentGame.position == data then return end
-        core.currentGame.position = data
-        core.currentGame.model:setPos(data * 16)
+        local game = core.currentGame
+        if not game then return end
+        if game.position == data then return end
+        game.position = data
+        game.model:setPos(data * 16)
+        ---@type AvatarVarGameInfo
+        local gameInfo = {
+            id = game.id,
+            joinGame = core.joinGame,
+            open = game.isOpen,
+            position = data
+        }
+        avatar:store("tabletop", gameInfo)
     end)
 
     onReceive:add("gameRot", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
@@ -294,9 +313,9 @@ function SyncTypeSetup:create(core, game)
     end)
 
     onReceive:add("playSpaces", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
-        if table.concat(game.playSpaces, ",") ~= table.concat(data, ",") then
-            game.playSpaces = data
-        end
+        if table.concat(game.playSpaces, ",") == table.concat(data, ",") then return end
+
+        game.playSpaces = data
     end)
 
     onReceive:add("pieceFlags", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
@@ -309,44 +328,66 @@ function SyncTypeSetup:create(core, game)
         flagOutput.unused1 = data[6]
         flagOutput.unused2 = data[7]
         flagOutput.visible = data[8]
-        --log(flagOutput)
-
-        -- TO DO: add flags
-        -- make sync an object
 
     end)
 
     onReceive:add("slotId", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
-        game.slots[objectId] = core.Slot:new(game, objectId)
+        if game.slots[objectId] then return end
+        local slot = core.Slot:new(game, objectId)
+        game.slots[objectId] = slot
+        return slot -- the automatic sync is likely not picking up on this
+    end)
+
+    onReceive:add("slotContents", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
+        local slot = game.slots[objectId]
+        if not slot then return end
+        if table.concat(slot.contents, ",") == table.concat(data, ",") then return end
+        slot.contents = data
+
+        for _,pieceId in pairs(data) do
+            local piece = game.pieces[pieceId]
+            if piece then
+                piece.parent = objectId
+            end
+        end
     end)
 
     onReceive:add("pieceId", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
-        game.pieces[objectId] = core.Piece:new(game, objectId)
+        if game.pieces[objectId] then return end
+        local piece = core.Piece:new(game, objectId)
+        game.pieces[objectId] = piece
+        return piece
     end)
 
     onReceive:add("generic", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
-        game[syncTypeId .. "s"][objectId][paramId] = data
+        local syncTypeTable = game[syncTypeId .. "s"]
+        if not syncTypeTable[objectId] then return end
+        syncTypeTable[objectId][paramId] = data
     end)
 
     onReceive:add("model", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
-        if data ~= game.pieces[objectId] then
-            ---@type HookType
-            local modelHook = sync.hookTypes.model
-            ---@type ModelPart
-            local model = modelHook.hooks[data]
-            local parentSlotID = game.pieces[objectId].parent
-            
-            if game.playSpaces[parentSlotID] and (not game.slots[parentSlotID].part) then
-                game.slots[objectId].part = game.model:newPart("playspace-"..parentSlotID)
-            end
+        local piece = game.pieces[objectId]
+        if not piece then return end
+        if data == piece.model then return end
 
-
-            if parentSlotID and game.slots[parentSlotID].part then
-                game.slots[parentSlotID].part:addChild(model:copy(objectId)) -- CHANGE TO A DEEPCOPY
-            end
-
-            -- deepcopy the model part. Save to parent.
+        piece.model = data
+        ---@type HookType
+        local modelHook = sync.hookTypes.model
+        ---@type ModelPart
+        local model = modelHook.hooks[data]
+        local parentSlotID = piece.parent
+        -- make a playspace index table
+        -- ensure the playspace table is being saved correctly on both clients
+        log(game.playSpaces)
+        if game.playSpaces[parentSlotID] and (not game.slots[parentSlotID].part) then
+            game.slots[objectId].part = game.model:newPart("playspace-"..parentSlotID)
+            log('a')
         end
+        if parentSlotID and game.slots[parentSlotID].part then
+            log("a")
+            game.slots[parentSlotID].part:addChild(model:copy(objectId)) -- CHANGE TO A DEEPCOPY
+        end
+        -- deepcopy the model part. Save to parent.
 
     end)
 
@@ -360,12 +401,11 @@ function SyncTypeSetup:create(core, game)
     gameMeta:addParam(sync:newParam("rotation", sync.paramTypes.variableLengthVec3, "gameRot"))
 
     gameMeta:addParam(sync:newParam("playSpaces", sync.paramTypes.variableLengthTable, "playSpaces"))
-
-    slot:addParam(sync:newParam("id", sync.paramTypes.variableLengthInteger, "slotId"))
-    piece:addParam(sync:newParam("id", sync.paramTypes.variableLengthInteger, "pieceId"))
+    slot:addParam(sync:newParam("id", sync.paramTypes.empty, "slotId"))
+    piece:addParam(sync:newParam("id", sync.paramTypes.empty, "pieceId"))
 
     slot:addParam(sync:newParam("parent", sync.paramTypes.variableLengthInteger, "generic"))
-    slot:addParam(sync:newParam("contents", sync.paramTypes.variableLengthTable, "doNothing"))
+    slot:addParam(sync:newParam("contents", sync.paramTypes.variableLengthTable, "slotContents"))
     slot:addParam(sync:newParam("contentsLimit", sync.paramTypes.variableLengthInteger, "generic"))
     slot:addParam(sync:newParam("dimensions", sync.paramTypes.dimenions, "generic"))
     slot:addParam(sync:newParam("position", sync.paramTypes.variableLengthVec2, "doNothing"))

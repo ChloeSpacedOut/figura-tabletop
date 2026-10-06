@@ -103,6 +103,23 @@ function sync:getSyncType(stringId)
     return self.syncTypes[syncTypeIndex]
 end
 
+---Updates specified data locally.
+---@param syncTypeId string
+---@param objectId integer
+---@param paramId string
+---@param syncData any
+function sync:localUpdate(syncTypeId, objectId, paramId, syncData)
+    local syncType = self:getSyncType(syncTypeId)
+    if not syncType then return end
+    local param = syncType:getParam(paramId)
+
+    ---@type HookType
+    local onReceiveHooks = self.hookTypes.onReceive
+    local onReceive = onReceiveHooks:getHook(param.onReceiveHook)
+    if not onReceive then return end
+    return onReceive(syncData, paramId, objectId, syncTypeId, true)
+end
+
 --#ENDREGION
 
 --#REGION HookType
@@ -773,23 +790,6 @@ function sync.SyncStream:send(syncTypeId, objectId, paramId, syncData)
     if not syncType then return end
     local param = syncType:getParam(paramId)
     self:getNewestSend():add(syncType, objectId, param, syncData)
-end
-
----Updates specified data locally using this sync stream.
----@param syncTypeId string
----@param objectId integer
----@param paramId string
----@param syncData any
-function sync.SyncStream:localUpdate(syncTypeId, objectId, paramId, syncData)
-    local syncType = sync:getSyncType(syncTypeId)
-    if not syncType then return end
-    local param = syncType:getParam(paramId)
-
-    ---@type HookType
-    local onReceiveHooks = self.sync.hookTypes.onReceive
-    local onReceive = onReceiveHooks:getHook(param.onReceiveHook)
-    if not onReceive then return end
-    onReceive(syncData, paramId, objectId, syncTypeId, true)
 end
 
 ---Receives specified data over this sync stream.

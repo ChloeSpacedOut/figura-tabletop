@@ -19,15 +19,9 @@ end
 ---@param game Game
 function core.onNewGame(game) end
 
-local function joinGame(userId, pingsGlobal, modelsGlobal, eventsGlobal, hostGlobal)
-    clientHandler.tabletopClient = {
-        userId = userId,
-        pings = pingsGlobal,
-        models = modelsGlobal,
-        events = eventsGlobal,
-        host = hostGlobal
-    }
-    core.currentGame.syncStreams.direct:setPingFunction(pingsGlobal.directSync)
+function core.joinGame(userId, pingsGlobal, modelsGlobal, eventsGlobal, hostGlobal)
+    if not core.currentGame then return end
+    core.currentGame.clientHandler = clientHandler:new(core, userId, pingsGlobal, modelsGlobal, eventsGlobal, hostGlobal)
 end
 
 ---Avatar variables to be stored alongside a tabletop game.
@@ -46,6 +40,7 @@ end
 ---@field pieces Piece[] table that contains all pieces
 ---@field playSpaces Slot[] table that contains all playspace slots
 ---@field root Piece the root piece of this game
+---@field clientHandler ClientHandler?
 core.Game = {}
 core.Game.__index = core.Game
 
@@ -58,6 +53,8 @@ function core.Game:new(uuid)
     self.sync = sync:new()
     self.sync:newHookType("model")
 
+    self.clientHandler = nil
+
     if uuid then
         self.id = uuid
     else
@@ -65,6 +62,9 @@ function core.Game:new(uuid)
     end
     
     self.gameTime = 0
+    self.isOpen = true
+
+    self.localOnly = false
 
     self.position = vec(0, 0, 0)
     self.rotation = vec(0, 0, 0)
@@ -78,23 +78,21 @@ function core.Game:new(uuid)
 
     core.currentGame = self
 
-    syncTypeSetup:create(core, self)
+    syncTypeSetup:new(core, self)
 
     self.passiveSync = self.sync:newSyncStream("passiveSync", pings.passiveSync)
     self.passiveSync.includeStreamId = false
 
     core.onNewGame(self)
 
-    local tabletop = {
-        ---@type AvatarVarGameInfo
-        game = {
-            id = self.id,
-            position = vec(0, 0, 0),
-            open = true,
-            joinGame = joinGame
-        }
+    ---@type AvatarVarGameInfo
+    local gameInfo = {
+        id = self.id,
+        position = vec(0, 0, 0),
+        open = true,
+        joinGame = core.joinGame
     }
-    avatar:store("tabletop", tabletop)
+    avatar:store("tabletop", gameInfo)
 
     return self
 end
@@ -105,6 +103,9 @@ end
 
 function core.Game:tick()
     self.sync:tick()
+    if self.clientHandler then
+        self.clientHandler:tick()
+    end
 
     self.gameTime = self.gameTime + 1
 
@@ -113,6 +114,19 @@ function core.Game:tick()
     if not self.passiveSync:getNewestSend() then
         self:doPassiveSync()
     end
+end
+
+function core.Game:setLocalOnly(boolean)
+    self.localOnly = boolean
+end
+
+function core.Game:updateParam(syncTypeId, objectId, paramId, syncData)
+    local returnValue = self.sync:localUpdate(syncTypeId, objectId, paramId, syncData)
+    if self.clientHandler and (not self.localOnly) then
+        local directSync = self.clientHandler.directSync
+        directSync:send(syncTypeId, objectId, paramId, syncData)
+    end
+    return returnValue
 end
 
 local function sendSyncTypeData(syncStream, syncType, data, isSingleInstance)
@@ -141,12 +155,6 @@ function core.Game:doPassiveSync()
     sendSyncTypeData(self.passiveSync, self.sync:getSyncType("slot"), self.slots, false)
 end
 
-function core.Game:clientSetup(pingFunction)
-    local directSync = self.sync:newSyncStream("directSync", pingFunction)
-    directSync.includeStreamId = false
-    return directSync
-end
-
 function core.Game:registerModel(id, model)
     ---@type HookType
     local modelHook = self.sync.hookTypes.model
@@ -159,25 +167,37 @@ function core.Game:getModel(id)
     return modelHook:getHook(id)
 end
 
----Creates a new game slot
-function core.Game:newSlot()
-    local id = #self.slots + 1
-    table.insert(self.slots, core.Slot:new(self, id))
+---comment
+---@param id any
+---@return Slot
+function core.Game:newSlot(id)
+    if not id then
+        id = #self.slots + 1
+    end 
+    ---@type Slot
+    return self:updateParam("slot", id, "id")
 end
 
-
-function core.Game:newPiece()
-    local id = #self.pieces + 1
-    local piece = core.Piece:new(self, id)
-    table.insert(self.pieces, piece)
-    return piece
+---comment
+---@param id any
+---@return Piece
+function core.Game:newPiece(id)
+    if not id then
+        id = #self.pieces + 1
+    end
+    ---@type Piece
+    return self:updateParam("piece", id, "id")
 end
 
-function core.Game:newPlaySpace()
+---comment
+---@return Slot
+function core.Game:newPlaySpace() -- make this local
     local id = #self.slots + 1
-    local slot = core.Slot:new(self, id)
-    table.insert(self.slots, slot)
-    table.insert(self.playSpaces, id)
+    local slot = self:newSlot(id)
+    local playSpaces = self.playSpaces
+    table.insert(playSpaces, id)
+    
+    self:updateParam("gameMeta", 1, "playSpaces", playSpaces)
     return slot
 end
 
@@ -226,6 +246,12 @@ function core.Slot:new(game, id)
         unused3 = false,
     }
     return self
+end
+
+function core.Slot:addPiece(piece)
+    local contents = self.contents
+    table.insert(contents, piece.id)
+    self:update("contents", contents)
 end
 
 ---Syncs and updates a parameter with the specified value. Use this instead of setting your parameters directly
@@ -290,7 +316,11 @@ end
 ---@param paramId string
 ---@param value any
 function core.Piece:update(paramId, value)
-    self.game:updateParam("piece", paramId, value)
+    self.game:updateParam("piece", self.id, paramId, value)
+end
+
+function core.Piece:setModel(modelHookId)
+    self:update("model", self.game.sync.hookTypes.model.hookIndex[modelHookId])
 end
 
 
