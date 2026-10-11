@@ -1,17 +1,19 @@
 local util = require("..util")
 
+---Contains the sync type setup functions.
 ---@class SyncTypeSetup
 local SyncTypeSetup = {}
 
----comment
----@param core TabletopCore
----@param game Game
-function SyncTypeSetup:new(core, game)
-    assert(game, "This should never happen?")
+--#REGION ParamType Setup
+
+---Sets up parameter types for tabletop.
+---@param core TabletopCore The core of the tabletop library.
+---@param game Game This tabletop game.
+function SyncTypeSetup:paramTypes(core, game)
     local sync = game.sync
 
     ---no data
-    sync.ParamType:new("empty",
+    sync:newParamType("empty",
         function(encoded, paramTypes)
             return ""
         end,
@@ -21,7 +23,7 @@ function SyncTypeSetup:new(core, game)
     )
 
     ---a string. Every character costs 1 byte to use spairingly
-    sync.ParamType:new("string",
+    sync:newParamType("string",
         function(encoded, paramTypes)
             local stringLength = util.readVariableLengthInt(encoded)
             return encoded:readString(stringLength)
@@ -33,7 +35,7 @@ function SyncTypeSetup:new(core, game)
     )
 
     ---a boolean (1 byte)
-    sync.ParamType:new("boolean",
+    sync:newParamType("boolean",
         function(encoded, paramTypes)
             return encoded:read() == "T"
         end,
@@ -47,7 +49,7 @@ function SyncTypeSetup:new(core, game)
     )
 
     ---a bundle of 8 boolean flags (1 byte)
-    sync.ParamType:new("flags",
+    sync:newParamType("flags",
         ----- THIS NEEDS TO BE CREATED
         function(encoded, paramTypes)
             local flagByte = string.byte(encoded:readByteArray(1))
@@ -74,7 +76,7 @@ function SyncTypeSetup:new(core, game)
     )
 
     ---a variable length integer. The number of bytes used will vary depending on the size. Useful for compact integer storage while still allowing high numbers
-    sync.ParamType:new("variableLengthInteger",
+    sync:newParamType("variableLengthInteger",
         function(encoded, paramTypes)
             local integer = util.readVariableLengthInt(encoded)
             return integer
@@ -85,7 +87,7 @@ function SyncTypeSetup:new(core, game)
     )
 
     ---a variable length integer that supports negative values though zig-zag encoding. This takes more space
-    sync.ParamType:new("variableLengthIntegerZZ",
+    sync:newParamType("variableLengthIntegerZZ",
         function(encoded, paramTypes)
             local integer = util.readVariableLengthIntZZ(encoded)
             return integer
@@ -96,7 +98,7 @@ function SyncTypeSetup:new(core, game)
     )
 
     ---a variable length decimal with 2 decimal places. Useful for compressed decimals with low precision. Supports negative values
-    sync.ParamType:new("variableLengthDecimal",
+    sync:newParamType("variableLengthDecimal",
         function(encoded, paramTypes)
             ---@type number
             return paramTypes["variableLengthIntegerZZ"].decode(encoded, paramTypes) / 100
@@ -107,7 +109,7 @@ function SyncTypeSetup:new(core, game)
     )
 
     ---a vector 2 that uses variable length integers with 2 decimal places. Useful for compressed vec2 with low precision. Supports negative values
-    sync.ParamType:new("variableLengthVec2",
+    sync:newParamType("variableLengthVec2",
         function(encoded, paramTypes)
             local x = paramTypes["variableLengthDecimal"].decode(encoded, paramTypes)
             local y = paramTypes["variableLengthDecimal"].decode(encoded, paramTypes)
@@ -121,7 +123,7 @@ function SyncTypeSetup:new(core, game)
     )
 
     ---a vector 3 that uses variable length integers with 2 decimal places. Useful for compressed vec3 with low precision
-    sync.ParamType:new("variableLengthVec3",
+    sync:newParamType("variableLengthVec3",
         function(encoded, paramTypes)
             local x = paramTypes["variableLengthDecimal"].decode(encoded, paramTypes)
             local y = paramTypes["variableLengthDecimal"].decode(encoded, paramTypes)
@@ -137,7 +139,7 @@ function SyncTypeSetup:new(core, game)
     )
 
     ---a decimal of range from 0 to 1, stored in a single byte. Multiply this value for different ranges
-    sync.ParamType:new("unitInterval",
+    sync:newParamType("unitInterval",
         function(encoded, paramTypes)
             local byte = encoded:read()
             return byte / 255
@@ -150,7 +152,7 @@ function SyncTypeSetup:new(core, game)
     )
 
     ---a 32 bit integer (4 bytes)
-    sync.ParamType:new("integer",
+    sync:newParamType("integer",
         function(encoded, paramTypes)
             return encoded:readInt()
         end,
@@ -165,7 +167,7 @@ function SyncTypeSetup:new(core, game)
     )
 
     ---a 64 bit double (8 bytes)
-    sync.ParamType:new("double",
+    sync:newParamType("double",
         function(encoded, paramTypes)
             return encoded:readDouble()
         end,
@@ -180,7 +182,7 @@ function SyncTypeSetup:new(core, game)
     )
 
     ---a 32 bit float (4 bytes)
-    sync.ParamType:new("float",
+    sync:newParamType("float",
         function(encoded, paramTypes)
             return encoded:readFloat()
         end,
@@ -195,7 +197,7 @@ function SyncTypeSetup:new(core, game)
     )
 
     ---a 16 bit short (2 bytes)
-    sync.ParamType:new("short",
+    sync:newParamType("short",
         function(encoded, paramTypes)
             return encoded:readShort()
         end,
@@ -211,7 +213,7 @@ function SyncTypeSetup:new(core, game)
     )
 
     ---a table of variable length integers 
-    sync.ParamType:new("variableLengthTable",
+    sync:newParamType("variableLengthTable",
         function(encoded, paramTypes)
             local dataLength = util.readVariableLengthInt(encoded)
             local endPos = encoded:getPosition() + dataLength
@@ -233,7 +235,7 @@ function SyncTypeSetup:new(core, game)
     )
 
     ---a UUID
-    sync.ParamType:new("UUID",
+    sync:newParamType("UUID",
         function(encoded, paramTypes)
             local intArray = {}
             for i = 1, 4 do
@@ -252,7 +254,7 @@ function SyncTypeSetup:new(core, game)
     )
 
     ---a dimenions object. For compression, decimals only have 2 decimal places (nothing under 0.01)
-    sync.ParamType:new("dimenions",
+    sync:newParamType("dimenions",
         function(encoded, paramTypes)
             local minX = paramTypes["variableLengthDecimal"].decode(encoded, paramTypes)
             local minY = paramTypes["variableLengthDecimal"].decode(encoded, paramTypes)
@@ -268,7 +270,17 @@ function SyncTypeSetup:new(core, game)
             return minX .. minY .. maxX .. maxY
         end
     )
+end
 
+--#ENDREGION
+
+--#REGION OnReceive Functions Setups
+
+---Sets up on receive functions for tabletop.
+---@param core TabletopCore The core of the tabletop library.
+---@param game Game This tabletop game.
+function SyncTypeSetup:onReceiveFunctions(core, game)
+    local sync = game.sync
     -- improve annotations later so this declaration isn't needed
 
     ---@type HookType
@@ -328,14 +340,14 @@ function SyncTypeSetup:new(core, game)
         flagOutput.unused1 = data[6]
         flagOutput.unused2 = data[7]
         flagOutput.visible = data[8]
-
+        -- make sure to finish this, rn you're just discarding it
     end)
 
     onReceive:add("slotId", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
         if game.slots[objectId] then return end
         local slot = core.Slot:new(game, objectId)
         game.slots[objectId] = slot
-        return slot -- the automatic sync is likely not picking up on this
+        return slot
     end)
 
     onReceive:add("slotContents", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
@@ -390,11 +402,21 @@ function SyncTypeSetup:new(core, game)
         -- deepcopy the model part. Save to parent.
 
     end)
+end
 
+--#ENDREGION
 
-    local gameMeta = sync.SyncType:new("gameMeta")
-    local slot = sync.SyncType:new("slot")
-    local piece = sync.SyncType:new("piece")
+--#REGION Params Setup
+
+---Sets up parameters for tabletop.
+---@param core TabletopCore The core of the tabletop library.
+---@param game Game This tabletop game.
+function SyncTypeSetup:params(core, game)
+    local sync = game.sync
+
+    local gameMeta = sync:newSyncType("gameMeta")
+    local slot = sync:newSyncType("slot")
+    local piece = sync:newSyncType("piece")
 
     gameMeta:addParam(sync:newParam("id", sync.paramTypes.UUID, "newGame"))
     gameMeta:addParam(sync:newParam("position", sync.paramTypes.variableLengthVec3, "gamePos"))
@@ -422,5 +444,7 @@ function SyncTypeSetup:new(core, game)
     piece:addParam(sync:newParam("contentsLimit", sync.paramTypes.variableLengthInteger, "generic"))
     piece:addParam(sync:newParam("flags", sync.paramTypes.flags, "pieceFlags"))
 end
+
+--#ENDREGION
 
 return SyncTypeSetup

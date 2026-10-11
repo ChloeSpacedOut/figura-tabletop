@@ -12,7 +12,7 @@ end
 
 if not host:isHost() then  return end
 
----deep copies a table. From http://lua-users.org/wiki/CopyTable
+---Deep copies a table. From http://lua-users.org/wiki/CopyTable.
 ---@param origional table
 ---@return table
 local function deepcopyTable(origional)
@@ -36,7 +36,7 @@ local isInGame = false
 ---@type AvatarGameInfo[]
 local openGames = {}
 
-
+---Updates the table of open games
 local function updateOpenGames()
     local avatarVars = world.avatarVars()
     local existingGames = {}
@@ -82,5 +82,4 @@ end
 ---@diagnostic disable-next-line: duplicate-set-field
 function events.tick()
     updateOpenGames()
-
 end

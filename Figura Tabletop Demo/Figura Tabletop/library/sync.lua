@@ -48,16 +48,33 @@ function sync:tick()
     end
 end
 
----comment
+---Event that handles ping rate limiting.
 ---@param id string
 function sync:on_play_sound(id)
     if id ~= "minecraft:ui.toast.in" then return end
-    for _, syncStream in pairs(sync.syncStreams) do
+    for _, syncStream in pairs(self.syncStreams) do
         local queuedSend = syncStream:getQueuedSend()
         if queuedSend then
             queuedSend.currentPacket = math.max(1, queuedSend.currentPacket - syncStream.rateLimitRoleback)
         end
     end
+end
+
+---Creates a new hook type.
+---@param id string The unique ID of this hook type.
+---@return HookType
+function sync:newHookType(id)
+    return self.HookType:new(id, self)
+end
+
+---Creates a new parameter type.
+---@generic T
+---@param id string The ID of this parameter type.
+---@param decode fun(encoded: Buffer, paramTypes: ParamType[]): T Decodes data after it has been pinged.
+---@param encode fun(rawData: T, paramTypes: ParamType[]): string Encodes data to be pinged.
+---@return ParamType<T>
+function sync:newParamType(id, decode, encode)
+    return self.ParamType:new(id, self, decode, encode)
 end
 
 ---Creates a new param.
@@ -69,24 +86,37 @@ function sync:newParam(id, paramType, onReceiveHook)
     return self.Param:new(id, self, paramType, onReceiveHook)
 end
 
+---Creates a new sync type.
+---@param id string The unique ID of this syncType.
+---@return SyncType
+function sync:newSyncType(id)
+    return self.SyncType:new(id, self)
+end
 
----Creates a new hook type.
----@param id string The unique ID of this hook type.
----@return HookType
-function sync:newHookType(id)
-    return self.HookType:new(id, self)
+---Creates a new time step.
+---@param timestamp integer The this time step's unique time stamp within the parent timeline.
+---@return TimeStep
+function sync:newTimeStep(timestamp)
+    return sync.TimeStep:new(self, timestamp)
+end
+
+---Creates a new timeline.
+---@param initTime integer The init time this timeline will use.
+---@return Timeline
+function sync:newTimeline(initTime)
+    return sync.Timeline:new(self, initTime)
 end
 
 ---Creates a new sync stream.
 ---@param id string The unique ID of this sync stream.
----@param ping function? The ping function send objects will hook into. If no ping function is provided on creation, this will be sync stream's built in function.
+---@param ping function The ping function send objects will hook into.
 ---@return SyncStream
 function sync:newSyncStream(id, ping)
     return self.SyncStream:new(id, self, ping)
 end
 
----Returns a sync steeam when given its string ID.
----@param stringId string
+---Returns a sync stream when given its string ID.
+---@param stringId string The string ID of this sync stream. 
 ---@return SyncStream?
 function sync:getSyncStream(stringId)
     local syncStreamIndex = self.syncStreamIndex[stringId]
@@ -95,7 +125,7 @@ function sync:getSyncStream(stringId)
 end
 
 ---Returns a sync type when given its string ID.
----@param stringId string
+---@param stringId string The string ID of this sync type. 
 ---@return SyncType?
 function sync:getSyncType(stringId)
     local syncTypeIndex = self.syncTypeIndex[stringId]
@@ -104,10 +134,10 @@ function sync:getSyncType(stringId)
 end
 
 ---Updates specified data locally.
----@param syncTypeId string
----@param objectId integer
----@param paramId string
----@param syncData any
+---@param syncTypeId string The id of the sync type releavant to data being updated.
+---@param objectId integer The object id releavant to data being updated.
+---@param paramId string The parameter id relevant to the data being updated.
+---@param syncData any The data being updated.
 function sync:localUpdate(syncTypeId, objectId, paramId, syncData)
     local syncType = self:getSyncType(syncTypeId)
     if not syncType then return end
@@ -166,18 +196,6 @@ end
 
 --#ENDREGION
 
---#REGION Ping
-
-function pings.sync(syncData, syncStreamIndex)
-    local syncStream = sync.syncStreams[syncStreamIndex]
-    if not syncStream then return end
-    syncStream:receive(syncData)
-end
-
-sync.ping = pings.sync
-
---#ENDREGION
-
 --#REGION SyncType Structure
 --#REGION ParamType
 
@@ -192,15 +210,16 @@ sync.ParamType.__index = sync.ParamType
 ---Creates a new parameter type.
 ---@generic T
 ---@param id string The ID of this parameter type.
+---@param syncInstance Sync The current instance of the sync library.
 ---@param decode fun(encoded: Buffer, paramTypes: ParamType[]): T Decodes data after it has been pinged.
 ---@param encode fun(rawData: T, paramTypes: ParamType[]): string Encodes data to be pinged.
 ---@return ParamType<T>
-function sync.ParamType:new(id, decode, encode)
+function sync.ParamType:new(id, syncInstance, decode, encode)
     self = setmetatable({}, sync.ParamType)
     self.id = id
     self.decode = decode
     self.encode = encode
-    sync.paramTypes[id] = self
+    syncInstance.paramTypes[id] = self
     return self
 end
 
@@ -254,22 +273,16 @@ sync.SyncType.__index = sync.SyncType
 
 ---Creates a new sync type.
 ---@param id string The unique ID of this syncType.
----@param ... Param Parameters to automatically add on creation. Ensure the order parameters are added is determanistic.
+---@param syncInstance Sync The current instance of the sync library.
 ---@return SyncType
-function sync.SyncType:new(id, ...)
+function sync.SyncType:new(id, syncInstance)
     self = setmetatable({}, sync.SyncType)
     self.id = id
     self.params = {}
     self.paramIndex = {}
 
-    local parameters = { ... }
-    if parameters then
-        for _, parameter in ipairs(parameters) do
-            self:addParam(parameter)
-        end
-    end
-    table.insert(sync.syncTypes, self)
-    sync.syncTypeIndex[id] = #sync.syncTypes
+    table.insert(syncInstance.syncTypes, self)
+    syncInstance.syncTypeIndex[id] = #syncInstance.syncTypes
     return self
 end
 
@@ -308,16 +321,19 @@ end
 
 ---A timeline's time step.
 ---@class TimeStep
+---@field sync Sync The current instance of the sync library.
 ---@field timestamp integer The this time step's unique time stamp within the parent timeline.
 ---@field syncTypes table This time step's data table, containing sync types, object IDs, parameter indexes and the final encoded data.
 sync.TimeStep = {}
 sync.TimeStep.__index = sync.TimeStep
 
 ---Creates a new time step.
+---@param syncInstance Sync The current instance of the sync library.
 ---@param timestamp integer The this time step's unique time stamp within the parent timeline.
 ---@return TimeStep
-function sync.TimeStep:new(timestamp)
+function sync.TimeStep:new(syncInstance, timestamp)
     self = setmetatable({}, sync.TimeStep)
+    self.sync = syncInstance
     self.timestamp = timestamp
     self.syncTypes = {}
     return self
@@ -329,7 +345,7 @@ end
 ---@param param Param The parameter synced from this object.
 ---@param syncData any The data synced.
 function sync.TimeStep:add(syncType, objectId, param, syncData)
-    local syncTypeIndex = sync.syncTypeIndex[syncType.id]
+    local syncTypeIndex = self.sync.syncTypeIndex[syncType.id]
     local paramIndex = syncType.paramIndex[param.id]
     if not self.syncTypes[syncTypeIndex] then
         self.syncTypes[syncTypeIndex] = {}
@@ -346,6 +362,7 @@ end
 
 ---The timeline of a send or receive object.
 ---@class Timeline
+---@field sync Sync The current instance of the sync library.
 ---@field timeSteps TimeStep[] A table that contains all timesteps within this timeline
 ---@field initTime integer The system time at the beginning of the timeline.
 ---@field timeStepIndex integer The index used when playing back a timeline.
@@ -353,10 +370,12 @@ sync.Timeline = {}
 sync.Timeline.__index = sync.Timeline
 
 ---Creates a new timeline.
+---@param syncInstance Sync The current instance of the sync library.
 ---@param initTime integer The init time this timeline will use.
 ---@return Timeline
-function sync.Timeline:new(initTime)
+function sync.Timeline:new(syncInstance, initTime)
     self = setmetatable({}, sync.Timeline)
+    self.sync = syncInstance
     self.timeSteps = {}
     self.initTime = initTime
     self.timeStepIndex = 1
@@ -371,7 +390,7 @@ function sync.Timeline:toTimeStep(timeStamp)
     if latestTimeStep and timeStamp == latestTimeStep.timestamp then
         return latestTimeStep
     else
-        local newTimeStep = sync.TimeStep:new(timeStamp)
+        local newTimeStep = sync:newTimeStep(timeStamp)
         table.insert(self.timeSteps, newTimeStep)
         return newTimeStep
     end
@@ -383,7 +402,7 @@ end
 ---@param param Param The parameter synced from this object.
 ---@param syncData any The data synced.
 function sync.Timeline:add(syncType, objectId, param, syncData)
-    local currentTimestamp = sync.clock - self.initTime
+    local currentTimestamp = self.sync.clock - self.initTime
     local timestep = self:toTimeStep(currentTimestamp)
     timestep:add(syncType, objectId, param, syncData)
 end
@@ -392,18 +411,18 @@ end
 ---@return string
 function sync.Timeline:finalise()
     local toSend = ""
-    local currentTime = util.numToVarLengthInt(sync.clock)
+    local currentTime = util.numToVarLengthInt(self.sync.clock)
     toSend = toSend .. currentTime
     for _, timeStep in ipairs(self.timeSteps) do
         local timeStepData = ""
         for syncTypeIndex, objects in pairs(timeStep.syncTypes) do
-            local syncType = sync.syncTypes[syncTypeIndex]
+            local syncType = self.sync.syncTypes[syncTypeIndex]
             local syncTypeData = ""
             for objectId, params in pairs(objects) do
                 local objectData = ""
                 for paramIndex, syncData in pairs(params) do
                     local param = syncType.params[paramIndex]
-                    local encodedData = param.paramType.encode(syncData, sync.paramTypes)
+                    local encodedData = param.paramType.encode(syncData, self.sync.paramTypes)
                     objectData = objectData .. util.numToVarLengthInt(paramIndex) .. encodedData 
                 end
                 objectId = util.numToVarLengthInt(objectId)
@@ -427,6 +446,7 @@ end
 
 ---The send object of a sync stream.
 ---@class Send
+---@field sync Sync The current instance of the sync library.
 ---@field syncStream SyncStream The sync stream this send object is in reference to.
 ---@field timeline Timeline The timeline of data that is to be sent.
 ---@field isSending boolean If the data is being sent.
@@ -443,10 +463,8 @@ function sync.Send:new(syncStream)
     self.isSending = false
     self.currentPacket = 1
     self.toSend = nil
-    self.timeline = sync.Timeline:new(sync.clock)
+    self.timeline = sync:newTimeline(syncStream.sync.clock)
     self.timelineIndex = {}
-
-    table.insert(syncStream.toSend, self)
     return self
 end
 
@@ -486,9 +504,9 @@ function sync.Receive:new(syncStream)
     self = setmetatable({}, sync.Receive)
     self.syncStream = syncStream
     self.isReceived = false
-    self.receiveTime = sync.clock
+    self.receiveTime = syncStream.sync.clock
     self.packets = {}
-    self.timeline = sync.Timeline:new(sync.clock + sync.receiveTimeOffset)
+    self.timeline = sync:newTimeline(syncStream.sync.clock + syncStream.sync.receiveTimeOffset)
     return self
 end
 
@@ -510,9 +528,10 @@ function sync.Receive:finalise(finalPacketId)
     buffer:setPosition(0)
     local bufferLength = buffer:getLength()
     local receiveTime = util.readVariableLengthInt(buffer)
-    if (sync.receiveTimeOffset == 0) or (receiveTime < sync.lastReceivedTime) then
-        sync.receiveTimeOffset = receiveTime - sync.clock
-        self.receiveTime = sync.clock + sync.receiveTimeOffset
+    local syncInstance = self.syncStream.sync
+    if (syncInstance.receiveTimeOffset == 0) or (receiveTime < syncInstance.lastReceivedTime) then
+        syncInstance.receiveTimeOffset = receiveTime - syncInstance.clock
+        self.receiveTime = syncInstance.clock + syncInstance.receiveTimeOffset
     end
 
     repeat
@@ -521,7 +540,7 @@ function sync.Receive:finalise(finalPacketId)
         local timestepEndPos = timestepLength + buffer:getPosition()
         repeat
             local syncTypeIndex = util.readVariableLengthInt(buffer)
-            local syncType = sync.syncTypes[syncTypeIndex]
+            local syncType = syncInstance.syncTypes[syncTypeIndex]
             local syncTypeLength = util.readVariableLengthInt(buffer)
             local syncTypeEndPos = syncTypeLength + buffer:getPosition()
             repeat
@@ -532,7 +551,7 @@ function sync.Receive:finalise(finalPacketId)
                     local paramIndex = util.readVariableLengthInt(buffer)
                     local param = syncType.params[paramIndex]
                     local paramType = param.paramType
-                    local decoded = paramType.decode(buffer, sync.paramTypes)
+                    local decoded = paramType.decode(buffer, syncInstance.paramTypes)
                     local timestep = self.timeline:toTimeStep(timestamp)
 
                     if not timestep.syncTypes[syncTypeIndex] then
@@ -550,7 +569,7 @@ function sync.Receive:finalise(finalPacketId)
     until buffer:getPosition() == bufferLength
 
     buffer:close()
-    sync.lastReceivedTime = receiveTime
+    syncInstance.lastReceivedTime = receiveTime
 end
 
 --#ENDREGION
@@ -567,7 +586,6 @@ end
 ---@field sendInterval integer How many ticks will be spent waiting after a send object is created before finalising it to be sent.
 ---@field receiveDelay integer How many ticks will be waited after data is received before playing out a timeline.
 ---@field rateLimitRoleback integer How many packets will be rolled back after the figura cloud ratelimits the client.
----@field includeStreamId boolean If the sync stream's ID should be included when syncing data.
 ---@field onFinishSend function? A funciton to run when a send object has finished sending data and is discarded.
 ---@field toSend Send[] A table that contains all of this sync stream's send objects.
 ---@field toReceive Receive[] A table that contains all of this sync stream's receive objects.
@@ -577,32 +595,43 @@ sync.SyncStream.__index = sync.SyncStream
 ---Creates a new sync stream.
 ---@param id string The unique ID of this sync stream.
 ---@param syncInstance Sync The current instance of the sync library.
----@param ping function? The ping function send objects will hook into. If no ping function is provided on creation, this will be sync stream's built in function.
+---@param ping function The ping function send objects will hook into.
 ---@return SyncStream
 function sync.SyncStream:new(id, syncInstance, ping)
     self = setmetatable({}, sync.SyncStream)
     self.id = id
     self.sync = sync
-    if ping then
-        self.ping = ping
-    else
-        self.ping = sync.ping
-    end
+    self.ping = ping
 
     self.packetInterval = 10
     self.syncSpeed = 450
     self.sendInterval = 10
     self.receiveDelay = 5
     self.rateLimitRoleback = 3
-    self.includeStreamId = true
 
     self.onFinishSend = nil
 
     self.toSend = {}
     self.toReceive = {}
-    table.insert(sync.syncStreams, self)
-    sync.syncStreamIndex[id] = #sync.syncStreams
+    table.insert(syncInstance.syncStreams, self)
+    syncInstance.syncStreamIndex[id] = #syncInstance.syncStreams
     return self
+end
+
+---Creates a new send object.
+---@return Send
+function sync.SyncStream:newSend()
+    local send = sync.Send:new(self)
+    table.insert(self.toSend, send)
+    return send
+end
+
+---Creates a new receive object.
+---@return Receive
+function sync.SyncStream:newReceive()
+    local receive = sync.Receive:new(self)
+    table.insert(self.toReceive, receive)
+    return receive
 end
 
 ---Gets the send object first in the queue.
@@ -677,7 +706,7 @@ function sync.SyncStream:playTimeline()
             for syncTypeIndex, objects in pairs(timeStep.syncTypes) do
                 for objectId, params in pairs(objects) do
                     for paramIndex, decodedData in pairs(params) do
-                        local syncType = sync.syncTypes[syncTypeIndex]
+                        local syncType = self.sync.syncTypes[syncTypeIndex]
                         local param = syncType.params[paramIndex]
                         local priority = param.priority
                         if priority > maxPriority then
@@ -747,12 +776,7 @@ function sync.SyncStream:pingFinalisedToSend()
     local packet = packetId .. packetData
     queuedSend.currentPacket = queuedSend.currentPacket + 1
 
-    if self.includeStreamId then
-        local syncStreamIndex = syncInstance.syncStreamIndex[self.id]
-        self.ping(packet, syncStreamIndex)
-    else
-        self.ping(packet)
-    end
+    self.ping(packet)
 
     if isFinalPacket then
         table.remove(self.toSend, 1)
@@ -778,13 +802,13 @@ function sync.SyncStream:update()
 end
 
 ---Sends specified data over this sync stream.
----@param syncTypeId string
----@param objectId integer
----@param paramId string
----@param syncData any
+---@param syncTypeId string The id of the sync type releavant to data being sent.
+---@param objectId integer The object id releavant to data being sent.
+---@param paramId string The parameter id relevant to the data being sent.
+---@param syncData any The data being sent.
 function sync.SyncStream:send(syncTypeId, objectId, paramId, syncData)
     if not self:getNewestSend() then
-        sync.Send:new(self)
+        self:newSend()
     end
     local syncType = sync:getSyncType(syncTypeId)
     if not syncType then return end
@@ -798,12 +822,12 @@ function sync.SyncStream:receive(syncData)
     if host:isHost() then return end
 
     if not self:getNewestReceive() then
-        table.insert(self.toReceive, sync.Receive:new(self))
+        self:newReceive()
     end
 
     local receive = self:getNewestReceive()
     if receive.isReceived then
-        table.insert(self.toReceive, sync.Receive:new(self))
+        self:newReceive()
         receive = self:getNewestReceive()
     end
 
@@ -819,7 +843,7 @@ function sync.SyncStream:receive(syncData)
     buffer:close()
 
     if packetId == 1 then
-        table.insert(self.toReceive, sync.Receive:new(self))
+        self:newReceive()
         receive = self:getNewestReceive()
     end
 

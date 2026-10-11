@@ -1,6 +1,6 @@
 local util = {}
 
----reverses the values of a given table
+---Reverses the values of a given table.
 ---@param table table
 ---@return table reversed
 function util.reverseTable(table)
@@ -10,8 +10,8 @@ function util.reverseTable(table)
     return table
 end
 
----converts an integer into a table of bits
----@param integer integer
+---Converts an integer into a table of bits.
+---@param integer integer The integer to be converted.
 ---@return table bits, integer numBytes
 function util.toBits(integer)
     local bits = {}
@@ -26,8 +26,9 @@ end
 
 
 local intCache = {}
----converts an integer into a variable length byte-string
----@param integer any
+
+---Converts an integer into a variable length byte-string.
+---@param integer integer The integer to be converted.
 ---@return string byteString
 function util.numToVarLengthInt(integer)
     integer = math.abs(integer)
@@ -35,7 +36,7 @@ function util.numToVarLengthInt(integer)
     if intCache[integer] then return intCache[integer] end
     local bits, numBytes = util.toBits(integer)
 
-    -- insert signBit into bit table
+    -- Insert signBit into bit table.
     for i = 1, (numBytes - 1) do
         i = (numBytes - i) * 7 + 1
         if i ~= 8 then
@@ -45,7 +46,7 @@ function util.numToVarLengthInt(integer)
         end
     end
 
-    -- populate any empty bits withn a byte
+    -- Populate any empty bits withn a byte.
     for i = 1, numBytes * 8 do
         i = (numBytes * 8 ) - i + 1
         if not bits[i] then
@@ -60,7 +61,7 @@ function util.numToVarLengthInt(integer)
             end
         end
     end
-    -- generate final byte-string
+    -- Generate final byte-string.
     local bitVal = 0
     local byteString = ""
     for i = 1, #bits do
@@ -77,6 +78,9 @@ function util.numToVarLengthInt(integer)
     return byteString
 end
 
+---Converts an integer into a variable length byte-string using zig-zag for negative value support.
+---@param number number The number to be converted.
+---@return string byteString
 function util.numToVarLengthIntZZ(number)
     number = math.ceil(number)
     if number > 0 then
@@ -87,10 +91,10 @@ function util.numToVarLengthIntZZ(number)
     return util.numToVarLengthInt(number)
 end
 
----read a specified number of bits and return it as a table
----@param buffer Buffer
----@param numBytes integer
----@return table<integer> bits
+---Read a specified number of bits and return it as a table.
+---@param buffer Buffer The buffer to be read.
+---@param numBytes integer How many bytes should be read.
+---@return integer[] bits
 function util.readBits(buffer,numBytes)
     local bufferPos = buffer:getPosition()
     local bits = {}
@@ -105,8 +109,8 @@ function util.readBits(buffer,numBytes)
     return bits
 end
 
----decodes a variable length number from a table of bits
----@param bits table<integer>
+---Decodes a variable length number from a table of bits.
+---@param bits table<integer> The bits to be decoded.
 ---@return integer number
 function util.variableLengthBitsToNum(bits)
     local number = 0
@@ -120,8 +124,8 @@ function util.variableLengthBitsToNum(bits)
     return number
 end
 
----reads a veriable length integer from a buffer
----@param buffer Buffer
+---Reads a variable length integer from a buffer.
+---@param buffer Buffer The buffer to be read.
 ---@return integer number
 function util.readVariableLengthInt(buffer)
     local bufferLength = buffer:getLength()
@@ -137,6 +141,9 @@ function util.readVariableLengthInt(buffer)
     return number
 end
 
+---Reads a zig-zag variable length integer from a buffer.
+---@param buffer Buffer The buffer to be read.
+---@return integer number
 function util.readVariableLengthIntZZ(buffer)
     local number = util.readVariableLengthInt(buffer)
     local isPositive = number % 2 == 1
