@@ -21,10 +21,7 @@ function ClientHandler:new(core, clientId, pingsGlobal, modelsGlobal, eventsGlob
     self.events = eventsGlobal
     self.host = hostGlobal
 
-
-    self.directSync = core.currentGame.sync:newSyncStream("directSync")
-    self.directSync.includeStreamId = false
-    self.directSync:setPingFunction(pingsGlobal.directSync)
+    self.directSync = core.currentGame.sync:newSyncStream("directSync", pingsGlobal.directSync)
 
     return self
 end

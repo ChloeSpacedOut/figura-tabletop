@@ -8,6 +8,7 @@ function tabletopCore.onNewGame(game)
         
         local playspaceSlot = game:newPlaySpace()
         local testPiece = game:newPiece()
+        
         testPiece:setModel("test")
         playspaceSlot:addPiece(testPiece)
 
@@ -15,7 +16,7 @@ function tabletopCore.onNewGame(game)
         
         
     end
-end 
+end
 
 --log(game)
 

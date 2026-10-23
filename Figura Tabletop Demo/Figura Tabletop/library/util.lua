@@ -156,4 +156,46 @@ function util.readVariableLengthIntZZ(buffer)
     return number
 end
 
+---Deep copies a table. From http://lua-users.org/wiki/CopyTable.
+---@param origional table
+---@return table
+function util.deepcopyTable(origional)
+    local orig_type = type(origional)
+    local copy
+    if orig_type == 'table' then
+        copy = {}
+        for origionalKey, orig_value in next, origional, nil do
+            copy[util.deepcopyTable(origionalKey)] = util.deepcopyTable(orig_value)
+        end
+        setmetatable(copy, util.deepcopyTable(getmetatable(origional)))
+    else
+        copy = origional
+    end
+    return copy
+end
+
+---Deep copies a model part.
+---@param part ModelPart The part to be deep copied.
+---@param name string? The name of this part after being copied.
+---@param maxDepth integer? The maximum depth of this deep copy.
+---@param currentDepth integer? The current depth of this depe copy
+---@return any
+function util.deepcopy(part,name,maxDepth,currentDepth)
+    if not currentDepth then
+        currentDepth = 1
+    end
+    if maxDepth and currentDepth > maxDepth then return part end
+    local copy
+    if name then
+        copy = part:copy(name)
+    else
+        copy = part:copy(part:getName())
+    end
+    for _, child in ipairs(part:getChildren()) do
+        copy:removeChild(child)
+        util.deepcopy(child,nil,maxDepth,currentDepth + 1):moveTo(copy)
+    end
+    return copy
+end
+
 return util

@@ -286,6 +286,72 @@ function SyncTypeSetup:onReceiveFunctions(core, game)
     ---@type HookType
     local onReceive = sync.hookTypes.onReceive
 
+    ---Sets up a part in the model tree.
+    ---@param parentPart ModelPart? The parent of this part.
+    ---@param id string | integer The ID of this part.
+    ---@return ModelPart?
+    local function setupPart(parentPart, id)
+        if parentPart and parentPart.children then
+            local part = parentPart.children:newPart(tostring(id))
+            local partChildren = part:newPart("children")
+            return part
+        else
+            return nil
+        end
+    end
+
+    ---Search though parent pieces and slots and ensure they have parts assigned to the model tree if possible.
+    ---@param object Piece | Slot The piece or slot to be populated.
+    ---@return ModelPart?
+    local function populateParents(object)
+        local type = object.type
+        local parentObject
+        if type == "slot" then
+            parentObject = game.pieces[object.parent]
+        elseif type == "piece" then
+            parentObject = game.slots[object.parent]
+        end
+        if object.parent and parentObject then
+            if parentObject.part and parentObject.part.children then
+                return parentObject.part
+            else
+                local parentPart = populateParents(parentObject)
+                local part = setupPart(parentPart, object.id)
+                object.part = part
+                return part
+            end
+        else
+            if type == "slot" and game.playSpaceIndex[object.id] then
+                local part = game.part.children:newPart(tostring(object.id))
+                local partChildren = part:newPart("children")
+                object.part = part
+                return part
+            else
+                return nil
+            end
+        end
+    end
+
+    ---Updates the model of a piece
+    ---@param piece Piece
+    local function updateModel(piece)
+        if not piece.model then return end
+        if piece.part and piece.part.model then
+            piece.part.model:remove()
+        end
+        
+        if piece.part then
+            ---@type HookType
+            local modelHook = sync.hookTypes.model
+            ---@type ModelPart
+            local modelPart = modelHook.hooks[piece.model]
+            local parentSlotID = piece.parent
+            if parentSlotID and game.slots[parentSlotID].part then
+                game.slots[parentSlotID].part:addChild(util.deepcopy(modelPart, tostring(piece.id)))
+            end
+        end
+    end
+
     onReceive:add("newGame", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
 
         if core.currentGame and core.currentGame.id == data then return end
@@ -298,11 +364,9 @@ function SyncTypeSetup:onReceiveFunctions(core, game)
     end)
 
     onReceive:add("gamePos", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
-        local game = core.currentGame
-        if not game then return end
         if game.position == data then return end
         game.position = data
-        game.model:setPos(data * 16)
+        game.part:setPos(data * 16)
         ---@type AvatarVarGameInfo
         local gameInfo = {
             id = game.id,
@@ -316,18 +380,22 @@ function SyncTypeSetup:onReceiveFunctions(core, game)
     onReceive:add("gameRot", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
         if core.currentGame.rotation == data then return end
         core.currentGame.rotation = data
-        core.currentGame.model:setRot(data)
+        core.currentGame.part:setRot(data)
     end)
 
     onReceive:add("doNothing", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
-        --log(data, paramId, objectId, syncTypeId, isLocalUpdate)
 
     end)
 
     onReceive:add("playSpaces", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
         if table.concat(game.playSpaces, ",") == table.concat(data, ",") then return end
-
         game.playSpaces = data
+
+        local newPlaySpaceIndex = {}
+        for key, id in pairs(data) do
+            newPlaySpaceIndex[id] = key
+        end
+        game.playSpaceIndex = newPlaySpaceIndex
     end)
 
     onReceive:add("pieceFlags", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
@@ -354,13 +422,67 @@ function SyncTypeSetup:onReceiveFunctions(core, game)
         local slot = game.slots[objectId]
         if not slot then return end
         if table.concat(slot.contents, ",") == table.concat(data, ",") then return end
+        local previousContentsIndex = {}
+
+        for _, pieceId in pairs(slot.contents) do
+            previousContentsIndex[pieceId] = true
+        end
+
+        local contentsIndex = {}
+        for _, pieceId in pairs(data) do
+            contentsIndex[pieceId] = true
+        end
+
         slot.contents = data
 
-        for _,pieceId in pairs(data) do
-            local piece = game.pieces[pieceId]
-            if piece then
-                piece.parent = objectId
+        for pieceId, _ in pairs(previousContentsIndex) do
+            if not contentsIndex[pieceId] then
+                -- this piece was removed
+                local piece = game.pieces[pieceId]
+                if piece then
+                    piece.parent = nil
+                end
+                if slot.part and slot.part.children and slot.part.children[pieceId] then
+                    slot.part.children[pieceId]:remove()
+                end
             end
+        end
+
+        for pieceId, _ in pairs(contentsIndex) do
+            if previousContentsIndex[pieceId] then goto continue end
+            -- this piece was added
+            local piece = game.pieces[pieceId]
+            
+            
+            if not piece then goto continue end
+            local oldParentSlotId = piece.parent
+            piece.parent = objectId
+            if oldParentSlotId then
+                local oldParentSlot = game.slots[oldParentSlotId]
+                local isOldParentPartDefined = oldParentSlot and oldParentSlot.part and oldParentSlot.part.children and oldParentSlot.part.children[pieceId]
+                local part
+                if slot.part and slot.part.children then
+                    part = slot.part.children
+                else
+                    part = populateParents(slot)
+                end
+
+                if isOldParentPartDefined and part then
+                    oldParentSlot.part.children[pieceId]:moveTo(slot.part.children)
+                end
+
+            else
+                local parentPart
+                if slot.part and slot.part.children then
+                    parentPart = slot.part.children
+                else
+                    parentPart = populateParents(slot)
+                end
+                local part = setupPart(parentPart, pieceId)
+                piece.part = part
+                updateModel(piece)
+            end
+            ::continue::
         end
     end)
 
@@ -380,27 +502,11 @@ function SyncTypeSetup:onReceiveFunctions(core, game)
     onReceive:add("model", function(data, paramId, objectId, syncTypeId, isLocalUpdate)
         local piece = game.pieces[objectId]
         if not piece then return end
-        if data == piece.model then return end
-
+        if (data == piece.model) and piece.part and piece.part.model then return end
         piece.model = data
-        ---@type HookType
-        local modelHook = sync.hookTypes.model
-        ---@type ModelPart
-        local model = modelHook.hooks[data]
-        local parentSlotID = piece.parent
-        -- make a playspace index table
-        -- ensure the playspace table is being saved correctly on both clients
-        log(game.playSpaces)
-        if game.playSpaces[parentSlotID] and (not game.slots[parentSlotID].part) then
-            game.slots[objectId].part = game.model:newPart("playspace-"..parentSlotID)
-            log('a')
-        end
-        if parentSlotID and game.slots[parentSlotID].part then
-            log("a")
-            game.slots[parentSlotID].part:addChild(model:copy(objectId)) -- CHANGE TO A DEEPCOPY
-        end
-        -- deepcopy the model part. Save to parent.
-
+        populateParents(piece)
+        updateModel(piece)
+        
     end)
 end
 

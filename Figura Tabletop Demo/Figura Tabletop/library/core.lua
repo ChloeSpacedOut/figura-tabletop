@@ -1,6 +1,7 @@
 local syncTypeSetup = require("..syncTypeSetup")
 local clientHandler = require("..clientHandler")
 local sync = require("..sync")
+local util = require("..util")
 
 --#REGION Core
 
@@ -60,7 +61,7 @@ end
 ---@field pieces Piece[] Table that contians all pieces for this game.
 ---@field playSpaces integer[] Table that the numeric id of all playspaces for this game.
 ---@field playSpaceIndex integer[] Table that contains the numeric index of all playspaces for this game.
----@field model ModelPart The root model part of this game.
+---@field part ModelPart The root reference to the model tree.
 ---@field passiveSync SyncStream The passive sync sync stream. Used for passively syncing information about the game.
 core.Game = {}
 core.Game.__index = core.Game
@@ -94,15 +95,16 @@ function core.Game:new(uuid)
     self.playSpaces = {}
     self.playSpaceIndex = {}
 
-    self.model = models:newPart("tabletopRoot", "WORLD")
+    self.part = models:newPart("tabletopRoot", "WORLD")
+    local children = self.part:newPart("children")
 
     core.currentGame = self
 
     syncTypeSetup:paramTypes(core, self)
     syncTypeSetup:onReceiveFunctions(core, self)
+    syncTypeSetup:params(core, self)
 
     self.passiveSync = self.sync:newSyncStream("passiveSync", pings.passiveSync)
-    self.passiveSync.includeStreamId = false
 
     core.onNewGame(self)
 
@@ -121,8 +123,16 @@ end
 ---Removes this game.
 function core.Game:remove()
     avatar:store("tabletop", nil)
-    self.model:remove()
+    self.part:remove()
     core.currentGame = nil
+end
+
+---Sets the position of this game.
+---@param pos any
+---@return Game
+function core.Game:setPos(pos)
+    self:updateParam("gameMeta", 1, "position", pos)
+    return self
 end
 
 ---Ticks this game.
@@ -142,8 +152,11 @@ function core.Game:tick()
 end
 
 ---Sets if this game should disable syncing data when parameters are updated. Useful for initally setting up the game.
+---@param boolean boolean If this game should use local updates.
+---@return Game
 function core.Game:setLocalOnly(boolean)
     self.localOnly = boolean
+    return self
 end
 
 ---Updates a parameter and syncs this data.
@@ -238,6 +251,7 @@ function core.Game:newPlaySpace()
     local slot = self:newSlot(id)
     local playSpaces = self.playSpaces
     table.insert(playSpaces, id)
+    self.playSpaceIndex[id] = #playSpaces
     
     self:updateParam("gameMeta", 1, "playSpaces", playSpaces)
     return slot
@@ -259,6 +273,7 @@ end
 
 ---@class Slot
 ---@field id integer The numeric id of this slot.
+---@field type string Signifies that this is a slot.
 ---@field game Game The game this slot belongs to.
 ---@field parent integer The numeric id of this slot's parent piece.
 ---@field part ModelPart? This slot's reference to the model tree.
@@ -278,6 +293,7 @@ core.Slot.__index = core.Slot
 function core.Slot:new(game, id)
     self = setmetatable({}, core.Slot)
     self.id = id
+    self.type = "slot"
     self.game = game
     self.parent = nil
     self.part = nil
@@ -303,7 +319,7 @@ end
 ---@param piece Piece The piece to be added to this slot.
 ---@return Slot
 function core.Slot:addPiece(piece)
-    local contents = self.contents
+    local contents = util.deepcopyTable(self.contents)
     table.insert(contents, piece.id)
     self:update("contents", contents)
     return self
@@ -333,6 +349,7 @@ end
 
 ---@class Piece
 ---@field id integer The numeric id of this piece.
+---@field type string Signifies that this is a piece.
 ---@field game Game The game this piece belongs to.
 ---@field parent integer The numeric id of this piece's parent slot.
 ---@field part ModelPart? This piece's reference to the model tree.
@@ -352,6 +369,7 @@ core.Piece.__index = core.Piece
 function core.Piece:new(game, id)
     self = setmetatable({}, core.Piece)
     self.id = id
+    self.type = "piece"
     self.game = game
     self.parent = nil
     self.part = nil

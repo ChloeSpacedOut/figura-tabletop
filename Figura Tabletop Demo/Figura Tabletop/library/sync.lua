@@ -140,14 +140,15 @@ end
 ---@param syncData any The data being updated.
 function sync:localUpdate(syncTypeId, objectId, paramId, syncData)
     local syncType = self:getSyncType(syncTypeId)
-    if not syncType then return end
+    assert(syncType, 'Sync type with ID "' .. syncTypeId .. '" was not defined')
     local param = syncType:getParam(paramId)
-
+    assert(param, 'Parameter with ID "' .. paramId .. '" was not defined')
     ---@type HookType
     local onReceiveHooks = self.hookTypes.onReceive
     local onReceive = onReceiveHooks:getHook(param.onReceiveHook)
     if not onReceive then return end
-    return onReceive(syncData, paramId, objectId, syncTypeId, true)
+    local temp = onReceive(syncData, paramId, objectId, syncTypeId, true)
+    return temp
 end
 
 --#ENDREGION
@@ -730,7 +731,6 @@ function sync.SyncStream:playTimeline()
                 local updates = priorities[i]
                 if updates then
                     for _, updateData in pairs(updates) do
-                        --log(updateData)
                         local onReceive = onReceiveHooks:getHook(updateData.param.onReceiveHook)
                         if onReceive then
                             onReceive(updateData.decodedData, updateData.param.id, updateData.objectId, updateData.syncType.id, false)
